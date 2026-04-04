@@ -1,0 +1,11 @@
+.venv
+__pycache__
+.git
+.gitignore
+*.db
+*.sqlite
+.streamlit
+.gemini
+tests
+tmp
+鼓

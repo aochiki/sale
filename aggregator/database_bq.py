@@ -73,6 +73,21 @@ class DatabaseManager:
             logging.error(f"Failed to save RAW individual data: {e}")
             raise
 
+    def delete_raw_data(self, filename):
+        """特定のファイルに関連する RAW データをすべて削除する"""
+        table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
+        query = f"DELETE FROM `{table_id}` WHERE filename = @f"
+        try:
+            query_job = self.client.query(query, job_config=bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ScalarQueryParameter("f", "STRING", filename)]
+            ))
+            query_job.result()
+            logging.info(f"Successfully deleted raw data for file: {filename}")
+            return True
+        except Exception as e:
+            logging.error(f"Failed to delete raw data for {filename}: {e}")
+            return False
+
     def get_raw_data(self):
         """保存されているすべての RAW データを取得する"""
         table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"

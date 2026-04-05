@@ -159,6 +159,35 @@ with tab_upload:
             if st.button("🔄 画面を更新してデータを確認する"):
                 st.rerun()
 
+    st.divider()
+    st.subheader("📋 アップロード済みデータの一覧")
+    if not all_raw.empty:
+        # ファイルごとのサマリーを表示
+        file_summary = all_raw.groupby('filename').agg({
+            'source_type': 'first',
+            'created_at': 'max',
+            'row_index': 'count'
+        }).reset_index().sort_values('created_at', ascending=False)
+
+        for i, row in file_summary.iterrows():
+            with st.container(border=True):
+                c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
+                c1.write(f"📄 **{row['filename']}**")
+                c2.write(f"🏷️ {row['source_type']}")
+                c3.write(f"📊 {row['row_index']:,} 件")
+                if c4.button("🗑️ 削除", key=f"del_{row['filename']}_{i}"):
+                    with st.spinner(f"{row['filename']} を削除中..."):
+                        if db_manager.delete_raw_data(row['filename']):
+                            st.toast(f"削除しました: {row['filename']}", icon="🗑️")
+                            clear_app_cache()
+                            import time
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error(f"削除に失敗しました: {row['filename']}")
+    else:
+        st.info("アップロード済みのデータはありません。")
+
 # --- 3. 管理タブ (リセット & マッピング) ---
 with tab_settings:
     st.subheader("🔗 統合マッピング定義")

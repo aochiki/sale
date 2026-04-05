@@ -1,105 +1,186 @@
+from google.cloud import bigquery
+from google.cloud import exceptions
 import pandas as pd
 import datetime
-import os
 import logging
-from google.cloud import bigquery
-from google.api_core import exceptions
+import json
 
 class DatabaseManager:
-    def __init__(self, project_id=None, dataset_id="sales_data"):
+    def __init__(self, project_id, dataset_id):
         self.project_id = project_id
         self.dataset_id = dataset_id
-        self.client = None
-        if project_id:
-            try:
-                self.client = bigquery.Client(project=project_id)
-                self._ensure_dataset_exists()
-            except Exception as e:
-                logging.error(f"BigQuery 接続エラー: {e}")
+        # 東京リージョンを明示的に指定してクライアントを初期化
+        self.client = bigquery.Client(project=project_id, location="asia-northeast1")
+        self._ensure_dataset_exists()
 
     def _ensure_dataset_exists(self):
-        """データセットが存在しなければ作成する"""
+        """データセットが存在しなければ作成する (東京)"""
         dataset_ref = bigquery.DatasetReference(self.project_id, self.dataset_id)
         try:
             self.client.get_dataset(dataset_ref)
         except exceptions.NotFound:
             dataset = bigquery.Dataset(dataset_ref)
-            dataset.location = "US" # デフォルト
+            dataset.location = "asia-northeast1"
             self.client.create_dataset(dataset)
-            logging.info(f"データセット {self.dataset_id} を作成しました。")
 
-    def check_file_exists(self, file_name):
-        """ファイル名が既に登録されているか確認する"""
-        if not self.client: return False
-        table_id = f"{self.project_id}.{self.dataset_id}.file_logs"
-        query = f"SELECT count(1) as cnt FROM `{table_id}` WHERE file_name = @fname"
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[bigquery.ScalarQueryParameter("fname", "STRING", file_name)]
-        )
-        try:
-            query_job = self.client.query(query, job_config=job_config)
-            results = query_job.to_dataframe()
-            return results['cnt'].iloc[0] > 0
-        except:
-            return False
+    def reset_dataset(self):
+        """データセット内のすべてのテーブルを削除して完全に初期化する"""
+        tables = self.client.list_tables(f"{self.project_id}.{self.dataset_id}")
+        for table in tables:
+            self.client.delete_table(table.reference, not_found_ok=True)
+        logging.info("Dataset reset complete.")
 
-    def save_data(self, df, file_names, overwrite=False):
-        """データを BigQuery に保存する（自動カラム追加対応）"""
-        if not self.client: raise Exception("BigQuery プロジェクトIDが設定されていません。")
+    def save_raw_data(self, df, filename, source_type, overwrite=True):
+        """解析なしで、各行を個別のJSON行として RAW テーブルに保存する"""
+        table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
         
-        table_id = f"{self.project_id}.{self.dataset_id}.sales_records"
+        schema = [
+            bigquery.SchemaField("filename", "STRING"),
+            bigquery.SchemaField("source_type", "STRING"),
+            bigquery.SchemaField("row_index", "INTEGER"),
+            bigquery.SchemaField("raw_row_json", "STRING"),
+            bigquery.SchemaField("uploaded_at", "TIMESTAMP"),
+        ]
+        self._ensure_table_exists(table_id, schema)
         
-        # 1. 既存データの削除 (上書きモード)
         if overwrite:
-            for fname in file_names:
-                # file_logs から削除
-                log_table = f"{self.project_id}.{self.dataset_id}.file_logs"
-                delete_log = f"DELETE FROM `{log_table}` WHERE file_name = @fname"
-                self.client.query(delete_log, job_config=bigquery.QueryJobConfig(
-                    query_parameters=[bigquery.ScalarQueryParameter("fname", "STRING", fname)]
-                ))
-                # sales_records から削除
-                delete_data = f"DELETE FROM `{table_id}` WHERE ORIGIN_FILE = @fname"
-                try:
-                    self.client.query(delete_data, job_config=bigquery.QueryJobConfig(
-                        query_parameters=[bigquery.ScalarQueryParameter("fname", "STRING", fname)]
-                    ))
-                except exceptions.NotFound:
-                    pass # テーブルがまだない場合は無視
+            query = f"DELETE FROM `{table_id}` WHERE filename = @f"
+            self.client.query(query, job_config=bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ScalarQueryParameter("f", "STRING", filename)]
+            )).result()
 
-        # 2. データのアップロード (自動カラム追加)
+        # 各行をJSONに変換してリスト化
+        data_to_load = []
+        now = datetime.datetime.now().isoformat()
+        for i, row in df.iterrows():
+            data_to_load.append({
+                'filename': filename,
+                'source_type': source_type,
+                'row_index': i,
+                'raw_row_json': json.dumps(row.to_dict(), ensure_ascii=False),
+                'uploaded_at': now
+            })
+        
+        # 分割してアップロード (あまりに巨大な場合はチャンク分けも検討するが、まずは1ファイル単位)
         job_config = bigquery.LoadJobConfig(
-            # テーブルが存在しない場合は作成し、あれば追加
             write_disposition="WRITE_APPEND",
-            # 新しいカラムを自動で追加することを許可
-            schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION],
-            autodetect=True
+            source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
         )
-        
-        # BigQuery は Datetime 型を好むが、Pandas の NaT がある場合は注意が必要
-        # 必要に応じて文字列形式にキャストするなどの処理を入れる
-        load_job = self.client.load_table_from_dataframe(df, table_id, job_config=job_config)
-        load_job.result() # 完了を待つ
-
-        # 3. ファイルログの記録
-        log_df = pd.DataFrame([{"file_name": f, "uploaded_at": datetime.datetime.now()} for f in file_names])
-        log_table = f"{self.project_id}.{self.dataset_id}.file_logs"
-        self.client.load_table_from_dataframe(log_df, log_table).result()
-        
-        return True
-
-    def get_all_data(self):
-        """保存されている全データを取得する"""
-        if not self.client: return pd.DataFrame()
-        table_id = f"{self.project_id}.{self.dataset_id}.sales_records"
         try:
-            query = f"SELECT * FROM `{table_id}`"
-            return self.client.query(query).to_dataframe()
+            self.client.load_table_from_json(data_to_load, table_id, job_config=job_config, location="asia-northeast1").result()
+            logging.info(f"Successfully saved individual rows for RAW data: {filename}")
+        except Exception as e:
+            logging.error(f"Failed to save RAW individual data: {e}")
+            raise
+
+    def get_raw_data(self):
+        """保存されているすべての RAW データを取得する"""
+        table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
+        try:
+            # 行順序を維持して取得
+            return self.client.query(f"SELECT * FROM `{table_id}` ORDER BY filename, row_index").to_dataframe()
         except exceptions.NotFound:
             return pd.DataFrame()
 
-    def clear_all_data(self):
-        """全データを削除（データセット自体を削除して再作成）"""
-        if not self.client: return
-        self.client.delete_dataset(self.dataset_id, delete_contents=True, not_found_ok=True)
-        self._ensure_dataset_exists()
+    def get_unique_headers(self, source_type):
+        """RAWデータから、特定の提供元が持つ実際の列名リストを抽出する"""
+        table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
+        # 1行だけ取得してヘッダーを特定する
+        query = f"SELECT raw_row_json FROM `{table_id}` WHERE source_type = @st LIMIT 1"
+        try:
+            results = self.client.query(query, job_config=bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ScalarQueryParameter("st", "STRING", source_type)]
+            )).result()
+            for row in results:
+                data = json.loads(row.raw_row_json)
+                return sorted(list(data.keys()))
+        except (exceptions.NotFound, StopIteration):
+            pass
+        return []
+
+    def _ensure_table_exists(self, table_id, schema):
+        """テーブルが存在しなければ作成する"""
+        try:
+            self.client.get_table(table_id)
+        except exceptions.NotFound:
+            table = bigquery.Table(table_id, schema=schema)
+            # リージョンを明示して作成
+            self.client.create_table(table, exists_ok=True)
+            logging.info(f"Created table: {table_id}")
+
+    def save_parsing_rule(self, file_pattern, header_row):
+        table_id = f"{self.project_id}.{self.dataset_id}.parsing_rules"
+        # スキーマを明示して作成を確実にする
+        schema = [
+            bigquery.SchemaField("file_pattern", "STRING"),
+            bigquery.SchemaField("header_row", "INTEGER"),
+        ]
+        self._ensure_table_exists(table_id, schema)
+        
+        df = pd.DataFrame([{'file_pattern': file_pattern, 'header_row': header_row}])
+        job_config = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND")
+        # リージョンを明示
+        self.client.load_table_from_dataframe(df, table_id, job_config=job_config, location="asia-northeast1").result()
+        logging.info(f"Saved parsing rule: {file_pattern}")
+
+    def get_parsing_rules(self):
+        table_id = f"{self.project_id}.{self.dataset_id}.parsing_rules"
+        try:
+            return self.client.query(f"SELECT * FROM `{table_id}`").to_dataframe()
+        except exceptions.NotFound:
+            return pd.DataFrame()
+
+    def delete_parsing_rule(self, pattern):
+        table_id = f"{self.project_id}.{self.dataset_id}.parsing_rules"
+        query = f"DELETE FROM `{table_id}` WHERE file_pattern = @p"
+        try:
+            self.client.query(query, job_config=bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ScalarQueryParameter("p", "STRING", pattern)]
+            )).result()
+        except exceptions.NotFound:
+            pass
+
+    def save_unified_column(self, unified_name, orchard_col, nextone_col, itunes_col, is_date, is_numeric):
+        table_id = f"{self.project_id}.{self.dataset_id}.unified_columns"
+        # スキーマを明示して作成を確実にする
+        schema = [
+            bigquery.SchemaField("unified_name", "STRING"),
+            bigquery.SchemaField("orchard_col", "STRING"),
+            bigquery.SchemaField("nextone_col", "STRING"),
+            bigquery.SchemaField("itunes_col", "STRING"),
+            bigquery.SchemaField("is_date", "BOOLEAN"),
+            bigquery.SchemaField("is_numeric", "BOOLEAN"),
+        ]
+        self._ensure_table_exists(table_id, schema)
+
+        # 既存あれば削除
+        self.delete_unified_column(unified_name)
+        df = pd.DataFrame([{
+            'unified_name': unified_name,
+            'orchard_col': orchard_col,
+            'nextone_col': nextone_col,
+            'itunes_col': itunes_col,
+            'is_date': is_date,
+            'is_numeric': is_numeric
+        }])
+        job_config = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND")
+        # リージョンを明示
+        self.client.load_table_from_dataframe(df, table_id, job_config=job_config, location="asia-northeast1").result()
+        logging.info(f"Saved unified column: {unified_name}")
+
+    def get_unified_columns(self):
+        table_id = f"{self.project_id}.{self.dataset_id}.unified_columns"
+        try:
+            return self.client.query(f"SELECT * FROM `{table_id}`").to_dataframe()
+        except exceptions.NotFound:
+            return pd.DataFrame()
+
+    def delete_unified_column(self, name):
+        table_id = f"{self.project_id}.{self.dataset_id}.unified_columns"
+        query = f"DELETE FROM `{table_id}` WHERE unified_name = @n"
+        try:
+            self.client.query(query, job_config=bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ScalarQueryParameter("n", "STRING", name)]
+            )).result()
+        except exceptions.NotFound:
+            pass

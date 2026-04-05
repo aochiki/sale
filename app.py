@@ -6,171 +6,258 @@ import io
 import datetime
 import logging
 import os
+import json
 
-st.set_page_config(page_title="売上データ管理システム", layout="wide", initial_sidebar_state="expanded")
+# --- Page Config ---
+st.set_page_config(
+    page_title="売上データ統合システム (RAW Dynamic)", 
+    page_icon="📊",
+    layout="wide", 
+    initial_sidebar_state="collapsed"
+)
 
-# --- 環境変数からの自動取得 (Cloud Run 用) ---
+# --- Premium Style ---
+st.markdown("""
+<style>
+    .block-container { padding-left: 5rem; padding-right: 5rem; }
+    .stApp { background-color: #fcfcfc; }
+    h1 { font-weight: 800; color: #1a1a1a; }
+    .stTabs [data-baseweb="tab"] { font-weight: 600; }
+    div[data-testid="stExpander"] { background-color: white; border-radius: 12px; }
+</style>
+""", unsafe_allow_html=True)
+
+# --- Database & Processor Logic ---
+@st.cache_resource
+def get_db(project_id):
+    dataset_id = "sales_aggregator_dataset"
+    return DatabaseManager(project_id=project_id, dataset_id=dataset_id)
+
+@st.cache_data(ttl=300)
+def fetch_raw_data(project_id):
+    return get_db(project_id).get_raw_data()
+
+@st.cache_data(ttl=600)
+def fetch_mappings(project_id):
+    return get_db(project_id).get_unified_columns()
+
+@st.cache_data(ttl=600)
+def fetch_rules(project_id):
+    return get_db(project_id).get_parsing_rules()
+
+@st.cache_data(ttl=600)
+def fetch_headers(project_id, source_type):
+    return get_db(project_id).get_unique_headers(source_type)
+
+def clear_app_cache():
+    st.cache_data.clear()
+
+# --- App Layout ---
 default_project_id = os.getenv('GOOGLE_CLOUD_PROJECT', st.session_state.get('project_id', ''))
+st.title("📊 売上データ管理システム")
+st.caption("RAWデータ保存 & 表示時動的統合モデル")
+st.markdown("---")
 
-# --- サイドバー (GCP 設定) ---
-st.sidebar.title("☁️ Google Cloud 設定")
-project_id = st.sidebar.text_input("Project ID (GCP)", value=default_project_id)
-dataset_id = "sales_aggregator_dataset"
-
-if project_id:
-    st.session_state['project_id'] = project_id
-    db_manager = DatabaseManager(project_id=project_id, dataset_id=dataset_id)
-else:
-    st.sidebar.warning("⚠️ Project ID を入力して認証してください。")
-    st.stop()
-
-@st.cache_data(ttl=600) # BigQuery はコストがかかるため少し長めにキャッシュ
-def load_all_data():
-    """キャッシュ付きで全データをデータベースから読み込み、正規化まで行う"""
-    all_data = db_manager.get_all_data()
-    if all_data.empty:
-        return all_data
-
-    # 日付形式の補正（正規化されていない過去データへの対応）
-    if '_DATE_' in all_data.columns:
-        from aggregator.processor import SalesAggregator
-        agg = SalesAggregator()
-        # まずベクトル化された正規化を適用し、その後に datetime 変換する
-        all_data['_DATE_'] = pd.to_datetime(agg._vectorized_normalize_date(all_data['_DATE_']), errors='coerce')
-    
-    return all_data
-
-# --- サイドバー (フィルター機能) ---
-st.sidebar.title("🔍 フィルター設定")
-
-def get_filtered_data():
-    all_data = load_all_data()
-    if all_data is None or all_data.empty:
-        return pd.DataFrame(), []
-
-    # --- シンプルな期間選択 (対象月リスト) ---
-    all_data['MONTH_STR'] = all_data['_DATE_'].dt.strftime('%Y-%m').fillna("不明")
-    month_list = sorted([m for m in all_data['MONTH_STR'].unique() if m != "不明"], reverse=True)
-    
-    selected_month = st.sidebar.selectbox("📅 対象月を選択", ["すべて"] + month_list)
-
-    # --- フィルタリング適用 ---
-    filtered_df = all_data.copy()
-    if selected_month != "すべて":
-        filtered_df = filtered_df[filtered_df['MONTH_STR'] == selected_month]
-        
-    # --- サイドバー追加フィルター ---
-    sources = ["すべて"] + sorted(filtered_df['SOURCE'].unique().tolist())
-    selected_source = st.sidebar.selectbox("プラットフォーム", sources)
-    if selected_source != "すべて":
-        filtered_df = filtered_df[filtered_df['SOURCE'] == selected_source]
-
-    artists = ["すべて"] + sorted(filtered_df['_ARTIST_'].dropna().unique().tolist())
-    selected_artist = st.sidebar.selectbox("アーティスト", artists)
-    if selected_artist != "すべて":
-        filtered_df = filtered_df[filtered_df['_ARTIST_'] == selected_artist]
-
-    # --- 表示項目の選択 (カラム選択) ---
-    st.sidebar.markdown("---")
-    all_possible_cols = filtered_df.columns.tolist()
-    selected_cols = st.sidebar.multiselect(
-        "📊 表示項目の選択",
-        options=all_possible_cols,
-        default=all_possible_cols
-    )
-        
-    return filtered_df, selected_cols
-
-# --- メイン画面 ---
-st.title("売上データ管理")
-
-tab_data, tab_upload = st.tabs(["📋 売上データ", "📥 新規アップロード"])
-
-filtered_df, selected_cols = get_filtered_data()
-
-with tab_data:
-    if filtered_df.empty:
-        st.info("データがありません。まずはデータをアップロードしてください。")
+with st.expander("⚙️ システム設定", expanded=not default_project_id):
+    project_id = st.text_input("GCP Project ID", value=default_project_id)
+    if project_id:
+        st.session_state['project_id'] = project_id
+        db_manager = get_db(project_id)
+        processor = SalesAggregator()
     else:
-        # KPI メトリクス
-        total_revenue = filtered_df['_NET_REVENUE_'].sum()
-        total_quantity = filtered_df['_QUANTITY_'].sum()
-        unique_artists = filtered_df['_ARTIST_'].nunique()
+        st.stop()
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("総売上", f"¥{total_revenue:,.0f}")
-        m2.metric("総数量", f"{total_quantity:,.0f}")
-        m3.metric("アーティスト数", f"{unique_artists}")
+tab_view, tab_upload, tab_settings = st.tabs(["📋 売上データ閲覧", "📥 RAWデータ追加", "⚙️ システム管理"])
 
-        st.divider()
+# --- 1. 閲覧タブ (動的統合) ---
+with tab_view:
+    raw_df = fetch_raw_data(project_id)
+    mappings = fetch_mappings(project_id)
+    
+    if raw_df.empty:
+        st.info("データがありません。RAWデータをアップロードしてください。")
+    else:
+        with st.status("🔄 データを動的に統合中...", expanded=False):
+            unified_df = processor.unify_raw_records(raw_df, mappings)
         
-        st.write(f"表示件数: {len(filtered_df):,} 件")
-        
-        # サンプルの表示 (10行ランダム)
-        with st.expander("🎲 データサンプル (ランダム10行)", expanded=True):
-            sample_df = filtered_df.sample(min(10, len(filtered_df))) if not filtered_df.empty else filtered_df
-            st.dataframe(sample_df[selected_cols] if selected_cols else sample_df, use_container_width=True)
+        if unified_df.empty:
+            st.warning("マッピング設定に基づいて統合されたデータがありません。設定を確認してください。")
+            st.dataframe(raw_df.head())
+        else:
+            # フィルタリング
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                # 日付項目の特定 (マッピングから is_date=True のものを探す)
+                month_col = next((c for c in unified_df.columns if not mappings.empty and mappings[mappings['unified_name']==c]['is_date'].any()), None)
+                month_list = ["すべて"] + sorted(unified_df[month_col].dropna().unique().tolist(), reverse=True) if month_col else ["すべて"]
+                sel_m = st.selectbox("📅 対象月", month_list)
+            with c2:
+                sel_s = st.selectbox("🌍 ソース", ["すべて"] + sorted(unified_df['SOURCE'].unique().tolist()))
+            
+            filtered = unified_df.copy()
+            if sel_m != "すべて": filtered = filtered[filtered[month_col] == sel_m]
+            if sel_s != "すべて": filtered = filtered[filtered['SOURCE'] == sel_s]
+            
+            st.dataframe(filtered, use_container_width=True, hide_index=True)
 
-        st.divider()
-        
-        # 全データテーブル表示
-        st.write("全データ一覧:")
-        display_df = filtered_df[selected_cols] if selected_cols else filtered_df
-        st.dataframe(display_df, use_container_width=True)
-        
-        # CSV/Excelダウンロード
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer) as writer:
-            display_df.to_excel(writer, index=False)
-        st.download_button("📥 表示中のデータをExcelで保存", buffer.getvalue(), "sales_report.xlsx")
+# --- 2. アップロードタブ (RAW保存) ---
+with tab_upload:
+    st.subheader("📥 RAWデータの取り込み")
+    # すでにアップロード済みのファイル名リストを取得
+    all_raw = db_manager.get_raw_data()
+    existing_filenames = set(all_raw['filename'].unique()) if not all_raw.empty else set()
 
-    st.divider()
-    with st.expander("詳細管理"):
-        if st.button("⚠️ 全データの削除"):
-            db_manager.clear_all_data()
-            st.cache_data.clear() # キャッシュをクリア
+    files = st.file_uploader("ファイルをドロップ", accept_multiple_files=True)
+    
+    # 重複チェックの警告を表示
+    duplicate_files = [f.name for f in files if f.name in existing_filenames] if files else []
+    if duplicate_files:
+        st.warning(f"⚠️ 以下の {len(duplicate_files)} 件のファイルは既に登録されています。\n" + 
+                   ", ".join(duplicate_files[:5]) + ("..." if len(duplicate_files) > 5 else ""))
+        over = st.checkbox("既存ファイルを上書きして保存", value=False)
+    else:
+        over = st.checkbox("既存ファイルを上書き", value=True)
+    
+    if files and st.button("🚀 データベースに保存", type="primary"):
+        rules = fetch_rules(project_id)
+        success = 0
+        error_count = 0
+        skip_count = 0
+        with st.status("データ処理中...") as status:
+            for f in files:
+                # 重複かつ上書きチェックなしの場合はスキップ
+                if f.name in existing_filenames and not over:
+                    st.info(f"スキップ (既に存在します): {f.name}")
+                    skip_count += 1
+                    continue
+                    
+                try:
+                    df = processor.parse_raw_only(f, rules=rules)
+                    if df is not None:
+                        s_type = processor.detect_source(f.name)
+                        db_manager.save_raw_data(df, f.name, s_type, overwrite=over)
+                        success += 1
+                    else:
+                        st.error(f"解析失敗: {f.name}")
+                        error_count += 1
+                except Exception as e:
+                    st.error(f"エラー ({f.name}): {e}")
+                    error_count += 1
+            
+            label = f"✅ {success} 件保存完了"
+            if error_count > 0: label += f" / ❌ {error_count} 件失敗"
+            if skip_count > 0: label += f" / ⏭️ {skip_count} 件スキップ"
+            status.update(label=label, state="complete" if error_count == 0 else "error")
+        
+        if success > 0:
+            st.toast(f"✅ {success} 件のデータを保存しました。", icon="🚀")
+            clear_app_cache()
+            import time
+            time.sleep(1.5)
             st.rerun()
 
-with tab_upload:
-    st.subheader("新規データの追加")
-    uploaded_files = st.file_uploader("レポートファイルをアップロード", accept_multiple_files=True)
+# --- 3. 管理タブ (リセット & マッピング) ---
+with tab_settings:
+    st.subheader("🔗 統合マッピング定義")
+    st.info("RAWデータに含まれるヘッダーをドロップダウンから選択して、統合項目を定義します。")
+    
+    # RAWデータからヘッダーを取得
+    h_orchard = ["(未設定)"] + fetch_headers(project_id, "ORCHARD")
+    h_nextone = ["(未設定)"] + fetch_headers(project_id, "NEXTONE")
+    h_itunes = ["(未設定)"] + fetch_headers(project_id, "ITUNES")
+    
+    if 'editing_col' not in st.session_state: st.session_state.editing_col = None
+    cur_mappings = fetch_mappings(project_id)
+    edit_item = cur_mappings[cur_mappings['unified_name'] == st.session_state.editing_col].iloc[0] if st.session_state.editing_col else None
 
-    if uploaded_files:
-        if st.button("解析・統合を開始", type="primary"):
-            with st.spinner("解析中..."):
-                aggregator = SalesAggregator()
-                try:
-                    merged_df = aggregator.process_files(uploaded_files)
-                    if merged_df is not None and not merged_df.empty:
-                        st.session_state['temp_df'] = merged_df
-                        st.session_state['temp_files'] = [f.name for f in uploaded_files]
-                    else:
-                        st.warning("有効なデータが見つかりませんでした。")
-                except Exception as e:
-                    st.error(f"エラー: {e}")
-
-    if 'temp_df' in st.session_state:
-        df = st.session_state['temp_df']
-        fnames = st.session_state['temp_files']
-        st.success(f"{len(df):,} 行のデータを検出しました。")
+    with st.form("mapping_form"):
+        u_name = st.text_input("統合項目名", value=st.session_state.editing_col if st.session_state.editing_col else "")
+        c2, c3, c4 = st.columns(3)
+        # ドロップダウン化
+        idx_o = h_orchard.index(edit_item['orchard_col']) if edit_item is not None and edit_item['orchard_col'] in h_orchard else 0
+        idx_n = h_nextone.index(edit_item['nextone_col']) if edit_item is not None and edit_item['nextone_col'] in h_nextone else 0
+        idx_i = h_itunes.index(edit_item['itunes_col']) if edit_item is not None and edit_item['itunes_col'] in h_itunes else 0
         
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("💾 データベースに保存"):
+        o_col = c2.selectbox("Orchard 列名", h_orchard, index=idx_o)
+        n_col = c3.selectbox("NexTone 列名", h_nextone, index=idx_n)
+        i_col = c4.selectbox("iTunes 列名", h_itunes, index=idx_i)
+        
+        is_d = st.checkbox("日付として処理 (YYYY-MM-01に統一)", value=bool(edit_item['is_date']) if edit_item is not None else False)
+        is_n = st.checkbox("数値として処理", value=bool(edit_item['is_numeric']) if edit_item is not None else False)
+        
+        if st.form_submit_button("💾 保存"):
+            if u_name:
                 try:
-                    db_manager.save_data(df, fnames, overwrite=True)
-                    # キャッシュをクリア
-                    st.cache_data.clear()
-                    st.success("保存しました。")
-                    del st.session_state['temp_df']
+                    db_manager.save_unified_column(u_name, 
+                        o_col if o_col != "(未設定)" else "",
+                        n_col if n_col != "(未設定)" else "",
+                        i_col if i_col != "(未設定)" else "",
+                        is_d, is_n)
+                    st.session_state.editing_col = None
+                    clear_app_cache()
+                    st.toast(f"マッピングを保存しました: {u_name}", icon="✅")
+                    import time
+                    time.sleep(2)
                     st.rerun()
                 except Exception as e:
-                    st.error(f"保存エラー: {e}")
-        with c2:
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer) as writer:
-                df.to_excel(writer, index=False)
-            st.download_button("📥 統合データをExcelで保存", buffer.getvalue(), "merged_report.xlsx")
-        
-        st.write("解析結果プレビュー:")
-        st.dataframe(df.head(100), use_container_width=True)
+                    logging.error(f"Mapping save error: {e}")
+                    st.error(f"マッピング保存エラー: {e}")
+
+    # マッピング一覧
+    if not cur_mappings.empty:
+        for i, m in cur_mappings.iterrows():
+            with st.container(border=True):
+                col_t, col_b = st.columns([4, 1])
+                col_t.write(f"📁 **{m['unified_name']}** (O: {m['orchard_col']}, N: {m['nextone_col']}, I: {m['itunes_col']})")
+                if col_b.button("📝 編集", key=f"edit_{i}"):
+                    st.session_state.editing_col = m['unified_name']
+                    st.rerun()
+
+    st.divider()
+    st.subheader("📄 解析ルールの設定")
+    with st.form("rule_form", clear_on_submit=True):
+        c1, c2, c3 = st.columns([3, 1, 1])
+        pat = c1.text_input("ファイル名パターン")
+        hr = c2.number_input("ヘッダー行目", min_value=1, value=1)
+        if c3.form_submit_button("➕ ルール追加"):
+            if pat:
+                try:
+                    logging.info(f"Attempting to add parsing rule: {pat}")
+                    # ユニーク性を担保するため既存があれば削除
+                    db_manager.delete_parsing_rule(pat)
+                    db_manager.save_parsing_rule(pat, hr - 1)
+                    clear_app_cache()
+                    st.toast(f"追加完了: {pat}", icon="➕")
+                    import time
+                    time.sleep(2)
+                    st.rerun()
+                except Exception as e:
+                    logging.error(f"Rule addition error: {e}")
+                    st.error(f"ルール追加エラー: {e}")
+
+    # 解析ルールの一覧表示
+    cur_rules = fetch_rules(project_id)
+    if not cur_rules.empty:
+        st.write("📋 現在登録されている解析ルール")
+        for idx, row in cur_rules.iterrows():
+            with st.container(border=True):
+                r1, r2, r3 = st.columns([3, 1, 1])
+                r1.write(f"パターン: `{row['file_pattern']}`")
+                r2.write(f"ヘッダー: {row['header_row'] + 1}行目")
+                if r3.button("🗑️ 削除", key=f"del_rule_{idx}"):
+                    db_manager.delete_parsing_rule(row['file_pattern'])
+                    clear_app_cache()
+                    st.toast(f"削除しました: {row['file_pattern']}", icon="🗑️")
+                    import time
+                    time.sleep(2)
+                    st.rerun()
+
+    st.divider()
+    st.subheader("⚠️ データベースの管理")
+    with st.expander("💣 危険な操作"):
+        st.warning("この操作は取り消せません。すべてのデータと設定が消去されます。")
+        if st.button("🔥 データベースを完全にリセットする", type="primary"):
+            db_manager.reset_dataset()
+            clear_app_cache()
+            st.success("リセット完了。ページを更新してください。")
+            st.rerun()

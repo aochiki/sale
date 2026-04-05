@@ -1,25 +1,20 @@
-.venv/
-__pycache__/
+# .gcloudignore
+# 不要なファイルやシステムファイルを除外する
+*
+!Dockerfile
+!app.py
+!requirements.txt
+!aggregator/
+!aggregator/*.py
+
+# Windows システムファイルを除外
+NTUSER.DAT*
+ntuser.dat*
+*.log
+*.tmp
 .git/
 .gitignore
-.dockerignore
-.gcloudignore
-*.db
-*.db-wal
-*.db-shm
-*.sqlite
-.streamlit/
-.gemini/
-tests/
-tmp/
-*.csv
-*.xlsx
-*.xls
-*.txt
-!requirements.txt
-node_modules/
-node.exe
-*.dll
-*.pyd
-*.lib
-鼓
+__pycache__/
+*.pyc
+venv/
+.env

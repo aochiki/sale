@@ -2,204 +2,164 @@ import pandas as pd
 import logging
 import io
 import datetime
+import fnmatch
+import json
 
 class SalesAggregator:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
 
-    def _get_preview(self, file):
-        """ファイルの先頭部分を安全に文字列として取得する"""
-        file.seek(0)
-        content = file.read(10000)
-        file.seek(0)
-        
-        encodings = ['utf-8-sig', 'utf-8', 'utf-16', 'shift-jis', 'cp932']
-        for enc in encodings:
-            try:
-                decoded = content.decode(enc)
-                if len(decoded) > 0:
-                    return decoded, enc
-            except:
-                continue
-        return content.decode('utf-8', errors='replace'), 'utf-8'
+    def detect_source(self, filename):
+        """ファイル名から会社タイプを判定する"""
+        if fnmatch.fnmatch(filename, "Orchard*"):
+            return "ORCHARD"
+        elif fnmatch.fnmatch(filename, "DivSiteAll*"):
+            return "NEXTONE"
+        elif "_ZZ" in filename:
+            return "ITUNES"
+        return "UNKNOWN"
 
-    def process_files(self, uploaded_files):
-        """複数のファイルを読み込み、自動判別して統合する"""
-        all_dfs = []
+    def parse_raw_only(self, file, rules=None):
+        """ファイルを解析し、最適な区切り文字とヘッダー行を自動検知してデータフレームを返す"""
+        content_sample = ""
+        try:
+            file.seek(0)
+            # 最初の数KBを読み込んで区切り文字を推測
+            sample_bytes = file.read(4000)
+            for enc in ['utf-8-sig', 'utf-8', 'cp932', 'shift-jis']:
+                try:
+                    content_sample = sample_bytes.decode(enc)
+                    break
+                except:
+                    continue
+        except:
+            pass
         
-        for file in uploaded_files:
-            try:
-                df = self._parse_file(file)
-                if df is not None:
-                    # カラム名のクリーンアップ (引用符、空白、BOMを除去)
-                    df.columns = [str(c).strip().replace('"', '').replace('\ufeff', '').strip().upper() for c in df.columns]
-                    
-                    df['ORIGIN_FILE'] = file.name
-                    df['UPLOADED_AT'] = datetime.datetime.now()
-                    
-                    # 統一用の固定カラムを追加 (日本語を含む場合も大文字化ルールに従う)
-                    # _SALES_AMOUNT_ や _QUANTITY_ などの接頭辞をつけて完全に独立させる
-                    
-                    for col in ['_NET_REVENUE_', '_QUANTITY_']:
-                        if col in df.columns:
-                            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-                    
-                    # _DATE_ の正規化 (ベクトル化処理で高速化)
-                    if '_DATE_' in df.columns:
-                        df['_DATE_'] = self._vectorized_normalize_date(df['_DATE_'])
+        # 区切り文字の推測
+        if content_sample:
+            tabs = content_sample.count('\t')
+            commas = content_sample.count(',')
+            semis = content_sample.count(';')
+            if tabs > commas and tabs > semis:
+                target_separators = ['\t', ',', ';']
+            elif semis > commas:
+                target_separators = [';', ',', '\t']
+            else:
+                target_separators = [',', '\t', ';']
+        else:
+            target_separators = ['\t', ',', ';']
+
+        # 試行する行数 (ルール優先、なければ 0-10行をスキャン)
+        skiprows_to_try = []
+        if rules is not None and not rules.empty:
+            for _, rule in rules.iterrows():
+                if fnmatch.fnmatch(file.name.lower(), rule['file_pattern'].lower()):
+                    skiprows_to_try.append(int(rule['header_row']))
+                    break
+        
+        # フォールバック: 0-10行をすべて試す
+        for r in range(11):
+            if r not in skiprows_to_try:
+                skiprows_to_try.append(r)
+
+        target_encodings = ['utf-8-sig', 'utf-8', 'cp932', 'shift-jis', 'utf-16']
+        
+        best_df = None
+        max_cols = 0
+
+        for sr in skiprows_to_try:
+            for enc in target_encodings:
+                for separator in target_separators:
+                    file.seek(0)
+                    try:
+                        # header=0 (skiprows適用後) で読み込み
+                        df = pd.read_csv(file, sep=separator, skiprows=sr, encoding=enc, on_bad_lines='skip', low_memory=False)
+                        if df.empty: continue
                         
-                    all_dfs.append(df)
-            except Exception as e:
-                self.logger.error(f"ファイル {file.name} の処理中にエラー: {e}")
-                import traceback
-                self.logger.error(traceback.format_exc())
-                raise Exception(f"ファイル '{file.name}' の解析に失敗しました。\nエラー内容: {e}")
-
-        if not all_dfs:
-            return None
-
-        merged_df = pd.concat(all_dfs, ignore_index=True, sort=False)
+                        # 有効なカラムが2つ以上あれば候補とする
+                        if df.shape[1] >= 2:
+                            # 最も列数が多いものを「正解」の可能性が高いと判断して保持
+                            if df.shape[1] > max_cols:
+                                max_cols = df.shape[1]
+                                best_df = df
+                                # ルールに基づいた行で成功した場合は即座に返す（レスポンス優先）
+                                if sr == skiprows_to_try[0] and rules is not None and not rules.empty:
+                                    return df
+                    except:
+                        continue
         
-        # 表示優先順位のカラム (すべて大文字にする)
-        priority_cols = ['SOURCE', '_DATE_', '_ARTIST_', '_TRACK_', '_ALBUM_', '_ISRC_', '_QUANTITY_', '_NET_REVENUE_']
-        existing_priority = [c for c in priority_cols if c in merged_df.columns]
-        other_cols = [c for c in merged_df.columns if c not in existing_priority]
+        return best_df
+
+    def unify_raw_records(self, raw_df, mappings):
+        """保存されている RAW データ (各行のJSON) を一括で統合する (動的処理)"""
+        if raw_df.empty: return pd.DataFrame()
         
-        return merged_df[existing_priority + other_cols]
-
-    def _parse_file(self, file):
-        """判別キーワードは大文字小文字を問わずチェック、読み込み後はカラムを一旦そのままにし、後に大文字化される"""
-        preview, encoding = self._get_preview(file)
-        # 判定用に大文字化しておく
-        p_up = preview.upper()
-        
-        # 1. The Orchard
-        if "PRODUCT ARTIST" in p_up or "TRACK ARTIST" in p_up or "TRANSACTION DATE" in p_up:
-            file.seek(0)
-            # Orchard はタブ区切りの .txt であることが多いため、まずはタブで試す
-            df = pd.read_csv(file, sep='\t', encoding=encoding)
-            # もし1列しか読み込めなかった場合はカンマ区切りを試す
-            if df.shape[1] <= 1:
-                file.seek(0)
-                df = pd.read_csv(file, sep=',', encoding=encoding)
-            return self._format_orchard(df)
-
-        # 2. NexTone / Diversity Site
-        if "利用月" in preview or "送信日" in preview or "楽曲名" in preview:
-            file.seek(0)
-            lines = preview.splitlines()
-            skip = 0
-            for i, line in enumerate(lines):
-                if "利用月" in line and "楽曲名" in line:
-                    skip = i
-                    break
-            df = pd.read_csv(file, sep='\t', skiprows=skip, encoding=encoding)
-            return self._format_nextone(df)
-
-        # 3. iTunes / Apple Music (Vendor Identifier 等)
-        if "VENDOR IDENTIFIER" in p_up or "START DATE" in p_up or "APPLE MUSIC" in p_up or "APPLE IDENTIFIER" in p_up:
-            file.seek(0)
-            lines = preview.splitlines()
-            skip = 0
-            for i, line in enumerate(lines):
-                l_up = line.upper()
-                if "VENDOR IDENTIFIER" in l_up or "STOREFRONT NAME" in l_up or "APPLE IDENTIFIER" in l_up:
-                    skip = i
-                    break
+        all_unified_dfs = []
+        # get_raw_data で既に filename, row_index 順にソートされている前提
+        for filename in raw_df['filename'].unique():
+            file_rows = raw_df[raw_df['filename'] == filename]
+            source_type = file_rows['source_type'].iloc[0]
             
-            df = pd.read_csv(file, sep='\t', skiprows=skip, encoding=encoding)
-            if not df.empty:
-                col0 = df.columns[0]
-                mask = df[col0].astype(str).str.contains('Total_Rows|Row Count|Row_Count|Row_count', case=False)
-                if mask.any():
-                    idx = df[mask].index[0]
-                    df = df.iloc[:idx]
-            return self._format_itunes(df)
+            try:
+                # 各行のJSONからデータフレームを復元
+                rows_list = [json.loads(r) for r in file_rows['raw_row_json']]
+                original_df = pd.DataFrame(rows_list)
+                
+                # 指定されたマッピングで列を抽出・変換
+                unified_df = self._apply_mapping(original_df, source_type, mappings)
+                if unified_df is not None:
+                    unified_df['SOURCE'] = source_type
+                    unified_df['ORIGIN_FILE'] = filename
+                    all_unified_dfs.append(unified_df)
+            except Exception as e:
+                self.logger.error(f"統合エラー ({filename}): {e}")
         
-        return None
+        if not all_unified_dfs: return pd.DataFrame()
+        return pd.concat(all_unified_dfs, ignore_index=True)
 
-    def _format_itunes(self, df):
-        # キー（元の列名）も安全のため大文字でマッチングさせるように remap を修正する
-        mapping = {
-            'START DATE': '_DATE_',
-            'ARTIST/SHOW/DEVELOPER/AUTHOR': '_ARTIST_',
-            'ARTIST': '_ARTIST_',
-            'TITLE': '_TRACK_',
-            'CONTENT TITLE': '_TRACK_',
-            'ISRC/ISBN': '_ISRC_',
-            'ISRC': '_ISRC_',
-            'QUANTITY': '_QUANTITY_',
-            'TOTAL  ROYALTY BEARING PLAYS': '_QUANTITY_',
-            'PARTNER SHARE': '_NET_REVENUE_',
-            'NET ROYALTY TOTAL': '_NET_REVENUE_'
-        }
-        res = self._remap_and_clean(df, mapping)
-        res.insert(0, 'SOURCE', 'iTunes')
-        return res
+    def _apply_mapping(self, df, source_type, mappings):
+        """RAWデータにマッピングを適用する"""
+        if mappings is None or mappings.empty:
+            return df
 
-    def _format_nextone(self, df):
-        mapping = {
-            '利用月': '_DATE_',
-            'アーティスト名': '_ARTIST_',
-            '楽曲名': '_TRACK_',
-            'アルバム名': '_ALBUM_',
-            'ISRC': '_ISRC_',
-            '数量': '_QUANTITY_',
-            '総支払額': '_NET_REVENUE_'
-        }
-        res = self._remap_and_clean(df, mapping)
-        res.insert(0, 'SOURCE', 'NexTone')
-        return res
+        new_df = pd.DataFrame(index=df.index)
+        src_col_key = {
+            "ORCHARD": "orchard_col",
+            "NEXTONE": "nextone_col",
+            "ITUNES": "itunes_col"
+        }.get(source_type.upper(), "orchard_col")
 
-    def _format_orchard(self, df):
-        mapping = {
-            'TRANSACTION DATE': '_DATE_',
-            'PRODUCT ARTIST': '_ARTIST_',
-            'TRACK': '_TRACK_',
-            'PRODUCT': '_ALBUM_',
-            'ISRC': '_ISRC_',
-            'QUANTITY': '_QUANTITY_',
-            'NET SHARE ACCOUNT CURRENCY': '_NET_REVENUE_'
-        }
-        res = self._remap_and_clean(df, mapping)
-        res.insert(0, 'SOURCE', 'The Orchard')
-        return res
+        # RAWデータのカラム名は大文字/小文字そのままの可能性があるため、マッピング側と比較しやすくする
+        df_col_map = {str(c).strip(): c for c in df.columns} 
 
-    def _vectorized_normalize_date(self, series):
-        """列全体を YYYY-MM-01 形式に一括変換する (高速)"""
-        # 文字列に変換
+        for _, row in mappings.iterrows():
+            unified_name = row['unified_name']
+            source_col = str(row[src_col_key]).strip()
+
+            if source_col in df_col_map:
+                orig_col = df_col_map[source_col]
+                val = df[orig_col]
+                
+                if row['is_date']:
+                    val = self._normalize_date(val)
+                elif row['is_numeric']:
+                    val = pd.to_numeric(val, errors='coerce').fillna(0)
+                
+                new_df[unified_name] = val
+            else:
+                new_df[unified_name] = None
+
+        return new_df
+
+    def _normalize_date(self, series):
+        """日付形式を YYYY-MM-01 に統一する"""
         s = series.astype(str).str.strip()
-        
-        # 1. YYYYMM 形式の判定と変換 (例: 202512 -> 2025-12-01)
-        # 6桁の数字のみのものを正規表現で置換
+        # YYYYMM (6桁) の対応
         mask_yyyymm = s.str.match(r'^\d{6}$')
         if mask_yyyymm.any():
             s.loc[mask_yyyymm] = s.loc[mask_yyyymm].str[:4] + "-" + s.loc[mask_yyyymm].str[4:6] + "-01"
-            
-        # 2. pd.to_datetime を一括適用 (errors='coerce' で不正な形式は NaT に)
+        
+        # Pandasの機能でパース
         dt_series = pd.to_datetime(s, errors='coerce')
-        
-        # 3. YYYY-MM-01 形式の文字列に戻す
-        # すべて 1日 に固定する
-        result = dt_series.dt.strftime('%Y-%m-01')
-        
-        # 4. 変換できなかったものは元の値を維持する（必要に応じて）
-        # result が NaN の箇所を元の s で埋める
-        final_result = result.fillna(s)
-        
-        return final_result
-
-    def _remap_and_clean(self, df, mapping):
-        # 処理前にカラム名を一旦大文字に統一してマッチングを確実にする
-        res = df.copy()
-        res.columns = [c.upper() for c in res.columns]
-        
-        # マッピング（キーは大文字で定義しておく）
-        for original_col, unified_name in mapping.items():
-            u_orig = original_col.upper()
-            if u_orig in res.columns:
-                if unified_name not in res.columns:
-                    res[unified_name] = res[u_orig]
-                else:
-                    res[unified_name] = res[unified_name].fillna(res[u_orig])
-        return res
+        # すべて月初の 01 日に固定
+        return dt_series.dt.strftime('%Y-%m-01').fillna(s)

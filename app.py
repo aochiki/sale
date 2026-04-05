@@ -163,11 +163,21 @@ with tab_upload:
     st.subheader("📋 アップロード済みデータの一覧")
     if not all_raw.empty:
         # ファイルごとのサマリーを表示
-        file_summary = all_raw.groupby('filename').agg({
+        agg_dict = {
             'source_type': 'first',
-            'created_at': 'max',
             'row_index': 'count'
-        }).reset_index().sort_values('created_at', ascending=False)
+        }
+        # created_at が存在する場合のみ集計対象に含める
+        has_created_at = 'created_at' in all_raw.columns
+        if has_created_at:
+            agg_dict['created_at'] = 'max'
+            
+        file_summary = all_raw.groupby('filename').agg(agg_dict).reset_index()
+        
+        if has_created_at:
+            file_summary = file_summary.sort_values('created_at', ascending=False)
+        else:
+            file_summary = file_summary.sort_values('filename')
 
         for i, row in file_summary.iterrows():
             with st.container(border=True):

@@ -120,7 +120,7 @@ with tab_upload:
     
     if files and st.button("🚀 データベースに保存", type="primary"):
         rules = fetch_rules(project_id)
-        success = 0
+        success_details = []
         error_count = 0
         skip_count = 0
         with st.status("データ処理中...") as status:
@@ -135,8 +135,8 @@ with tab_upload:
                     df = processor.parse_raw_only(f, rules=rules)
                     if df is not None:
                         s_type = processor.detect_source(f.name)
-                        db_manager.save_raw_data(df, f.name, s_type, overwrite=over)
-                        success += 1
+                        row_count = db_manager.save_raw_data(df, f.name, s_type, overwrite=over)
+                        success_details.append({"file": f.name, "rows": row_count})
                     else:
                         st.error(f"解析失敗: {f.name}")
                         error_count += 1
@@ -144,17 +144,20 @@ with tab_upload:
                     st.error(f"エラー ({f.name}): {e}")
                     error_count += 1
             
-            label = f"✅ {success} 件保存完了"
+            label = f"✅ {len(success_details)} 件のファイルを処理しました"
             if error_count > 0: label += f" / ❌ {error_count} 件失敗"
             if skip_count > 0: label += f" / ⏭️ {skip_count} 件スキップ"
             status.update(label=label, state="complete" if error_count == 0 else "error")
         
-        if success > 0:
-            st.toast(f"✅ {success} 件のデータを保存しました。", icon="🚀")
+        if success_details:
+            st.success("🎉 データの取り込みが完了しました！")
+            for item in success_details:
+                st.write(f"🔹 **{item['file']}**: {item['rows']:,} 件のデータを取り込み完了")
+            
+            st.toast(f"✅ {len(success_details)} 件のファイルを保存しました。", icon="🚀")
             clear_app_cache()
-            import time
-            time.sleep(1.5)
-            st.rerun()
+            if st.button("🔄 画面を更新してデータを確認する"):
+                st.rerun()
 
 # --- 3. 管理タブ (リセット & マッピング) ---
 with tab_settings:

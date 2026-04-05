@@ -67,40 +67,94 @@ with st.expander("⚙️ システム設定", expanded=not default_project_id):
     else:
         st.stop()
 
-tab_view, tab_upload, tab_settings = st.tabs(["📋 売上データ閲覧", "📥 RAWデータ追加", "⚙️ システム管理"])
+tab_view, tab_flexible, tab_upload, tab_settings = st.tabs(["📋 売上データ閲覧", "📊 自由集計", "📥 RAWデータ追加", "⚙️ システム管理"])
+
+# --- 共通データの取得 ---
+raw_df = fetch_raw_data(project_id)
+mappings = fetch_mappings(project_id)
+unified_df = pd.DataFrame()
+if not raw_df.empty and not mappings.empty:
+    with st.status("🔄 データを動的に統合中...", expanded=False):
+        unified_df = processor.unify_raw_records(raw_df, mappings)
 
 # --- 1. 閲覧タブ (動的統合) ---
 with tab_view:
-    raw_df = fetch_raw_data(project_id)
-    mappings = fetch_mappings(project_id)
-    
     if raw_df.empty:
         st.info("データがありません。RAWデータをアップロードしてください。")
+    elif unified_df.empty:
+        st.warning("マッピング設定に基づいて統合されたデータがありません。設定を確認してください。")
     else:
-        with st.status("🔄 データを動的に統合中...", expanded=False):
-            unified_df = processor.unify_raw_records(raw_df, mappings)
+        # フィルタリング
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            month_col = next((c for c in unified_df.columns if not mappings.empty and mappings[mappings['unified_name']==c]['is_date'].any()), None)
+            month_list = ["すべて"] + sorted(unified_df[month_col].dropna().unique().tolist(), reverse=True) if month_col else ["すべて"]
+            sel_m = st.selectbox("📅 対象月", month_list)
+        with c2:
+            sel_s = st.selectbox("🌍 ソース", ["すべて"] + sorted(unified_df['SOURCE'].unique().tolist()))
         
-        if unified_df.empty:
-            st.warning("マッピング設定に基づいて統合されたデータがありません。設定を確認してください。")
-            st.dataframe(raw_df.head())
-        else:
-            # フィルタリング
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                # 日付項目の特定 (マッピングから is_date=True のものを探す)
-                month_col = next((c for c in unified_df.columns if not mappings.empty and mappings[mappings['unified_name']==c]['is_date'].any()), None)
-                month_list = ["すべて"] + sorted(unified_df[month_col].dropna().unique().tolist(), reverse=True) if month_col else ["すべて"]
-                sel_m = st.selectbox("📅 対象月", month_list)
-            with c2:
-                sel_s = st.selectbox("🌍 ソース", ["すべて"] + sorted(unified_df['SOURCE'].unique().tolist()))
-            
-            filtered = unified_df.copy()
-            if sel_m != "すべて": filtered = filtered[filtered[month_col] == sel_m]
-            if sel_s != "すべて": filtered = filtered[filtered['SOURCE'] == sel_s]
-            
-            st.dataframe(filtered, use_container_width=True, hide_index=True)
+        filtered = unified_df.copy()
+        if sel_m != "すべて": filtered = filtered[filtered[month_col] == sel_m]
+        if sel_s != "すべて": filtered = filtered[filtered['SOURCE'] == sel_s]
+        
+        st.dataframe(filtered, use_container_width=True, hide_index=True)
 
-# --- 2. アップロードタブ (RAW保存) ---
+# --- 2. 自由集計タブ (ピボット) ---
+with tab_flexible:
+    if unified_df.empty:
+        st.info("集計可能なデータがありません。")
+    else:
+        st.subheader("📊 ダイナミック・ピボットレポート")
+        
+        # 属性項目と数値項目の抽出
+        attr_cols = [m['unified_name'] for _, m in mappings.iterrows() if not m['is_numeric'] and not m['is_date']]
+        num_cols = [m['unified_name'] for _, m in mappings.iterrows() if m['is_numeric']]
+        date_col = next((m['unified_name'] for _, m in mappings.iterrows() if m['is_date']), None)
+        
+        # 期間フィルター
+        if date_col:
+            months = sorted(unified_df[date_col].dropna().unique().tolist())
+            c1, c2 = st.columns(2)
+            start_m = c1.selectbox("🚩 開始月", months, index=0)
+            end_m = c2.selectbox("🏁 終了月", months, index=len(months)-1)
+            
+            # フィルタ適用
+            flex_df = unified_df[(unified_df[date_col] >= start_m) & (unified_df[date_col] <= end_m)].copy()
+        else:
+            flex_df = unified_df.copy()
+            st.warning("日付項目が定義されていないため、期間絞り込みはスキップされました。")
+
+        # 集計設定
+        with st.expander("🛠️ 集計軸の設定", expanded=True):
+            cc1, cc2, cc3 = st.columns(3)
+            row_axis = cc1.selectbox("タテ軸 (行)", attr_cols + (['SOURCE'] if 'SOURCE' in unified_df.columns else []), index=0)
+            col_list = ["(なし)"] + attr_cols + (['SOURCE'] if 'SOURCE' in unified_df.columns else [])
+            col_axis = cc2.selectbox("ヨコ軸 (列)", col_list, index=0)
+            val_cols = cc3.multiselect("表示する値", num_cols, default=num_cols[:1] if num_cols else [])
+
+        if not val_cols:
+            st.warning("表示する値（数値項目）を選択してください。")
+        else:
+            try:
+                # ピボットテーブルの生成
+                p_cols = col_axis if col_axis != "(なし)" else None
+                pivot_res = flex_df.pivot_table(
+                    index=row_axis,
+                    columns=p_cols,
+                    values=val_cols,
+                    aggfunc='sum',
+                    margins=True,
+                    margins_name="合計"
+                )
+                
+                # スタイル調整（カンマ区切りなど）
+                st.dataframe(pivot_res, use_container_width=True)
+                
+            except Exception as e:
+                st.error(f"集計エラー: {e}")
+                st.info("選択した項目の組み合わせで集計できませんでした。軸を変更してみてください。")
+
+# --- 3. アップロードタブ (RAW保存) ---
 with tab_upload:
     st.subheader("📥 RAWデータの取り込み")
     # すでにアップロード済みのファイル名リストを取得

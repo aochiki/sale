@@ -215,7 +215,7 @@ class DatabaseManager:
             pass
 
     # --- GCS Methods ---
-    def get_gcs_signed_url(self, filename, content_type="application/octet-stream"):
+    def get_gcs_signed_url(self, filename, content_type=None):
         """ブラウザから直接アップロードするための署名付きURLを発行する"""
         import google.auth
         from google.auth.transport import requests as auth_requests
@@ -245,14 +245,18 @@ class DatabaseManager:
         auth_request = auth_requests.Request()
         credentials.refresh(auth_request)
         
-        url = blob.generate_signed_url(
-            version="v4",
-            expiration=datetime.timedelta(minutes=30),
-            method="PUT",
-            content_type=content_type,
-            service_account_email=sa_email,
-            access_token=credentials.token
-        )
+        # Content-Typeが指定されていない場合は署名に含めない (SignatureDoesNotMatch回避)
+        signing_args = {
+            "version": "v4",
+            "expiration": datetime.timedelta(minutes=30),
+            "method": "PUT",
+            "service_account_email": sa_email,
+            "access_token": credentials.token
+        }
+        if content_type:
+            signing_args["content_type"] = content_type
+            
+        url = blob.generate_signed_url(**signing_args)
         return url
 
     def list_gcs_files(self):

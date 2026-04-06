@@ -278,7 +278,8 @@ with tab_upload:
 
                 var xhr = new XMLHttpRequest();
                 xhr.open('PUT', '{signed_url}', true);
-                xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+                // SignatureDoesNotMatch 回避のため、署名時に指定した Content-Type と完全に一致させる
+                xhr.setRequestHeader('Content-Type', 'application/octet-stream');
                 xhr.upload.onprogress = function(ev) {{
                     if (ev.lengthComputable) {{
                         var pct = Math.round(ev.loaded / ev.total * 100);

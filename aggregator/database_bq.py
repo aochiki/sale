@@ -217,14 +217,31 @@ class DatabaseManager:
     # --- GCS Methods ---
     def get_gcs_signed_url(self, filename, content_type="application/octet-stream"):
         """ブラウザから直接アップロードするための署名付きURLを発行する"""
+        import google.auth
+        from google.auth.transport import requests as auth_requests
+        
         bucket = self.storage_client.bucket(self.bucket_name)
         blob = bucket.blob(filename)
+        
+        # Cloud Run (Compute Engine credentials) では signBlob API を使用
+        credentials, _ = google.auth.default()
+        
+        if hasattr(credentials, 'service_account_email') and credentials.service_account_email:
+            sa_email = credentials.service_account_email
+        else:
+            sa_email = f"bigquery-data-manager@{self.project_id}.iam.gserviceaccount.com"
+        
+        # 認証情報をリフレッシュ
+        auth_request = auth_requests.Request()
+        credentials.refresh(auth_request)
         
         url = blob.generate_signed_url(
             version="v4",
             expiration=datetime.timedelta(minutes=30),
             method="PUT",
-            content_type=content_type
+            content_type=content_type,
+            service_account_email=sa_email,
+            access_token=credentials.token
         )
         return url
 

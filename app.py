@@ -167,182 +167,192 @@ with tab_flexible:
                 st.error(f"集計エラー: {e}")
                 st.info("選択した項目の組み合わせで集計できませんでした。軸を変更してみてください。")
 
-# --- GCS Helper for App ---
-def gcs_direct_uploader_ui(db):
-    st.markdown("""
-        <div style="background-color: #f0f7ff; padding: 1rem; border-radius: 10px; border-left: 5px solid #007bff; margin-bottom: 1rem;">
-            <strong>🐘 大容量ファイル (32MB以上) の直送モード</strong><br>
-            <small>Cloud Run の制限を回避し、ブラウザから Google のストレージへ直接送信します。</small>
-        </div>
-    """, unsafe_allow_html=True)
-    
-    # 署名付きURLを発行
-    target_name = st.text_input("GCS保存時のファイル名（任意）", placeholder="例: sales_2024_large.csv")
-    
+
+# --- 3. アップロードタブ (GCS統合) ---
+with tab_upload:
+    st.subheader("📥 データファイルのアップロード")
+    st.caption("ファイルサイズの制限なし — ブラウザからクラウドストレージへ直接送信されます。")
+
+    # すでにアップロード済みのファイル名リストを取得
+    all_raw = raw_df
+    existing_filenames = set(all_raw['filename'].unique()) if not all_raw.empty else set()
+
+    # --- ステップ1: ファイルのアップロード ---
+    st.markdown("#### ① ファイルをアップロード")
+    target_name = st.text_input(
+        "保存ファイル名",
+        placeholder="例: orchard_sales_2024Q1.csv",
+        help="アップロード先に使うファイル名を入力してください（拡張子 .csv を含む）。"
+    )
+
     if target_name:
         if "." not in target_name:
-            st.warning("拡張子（.csvなど）を含めて入力してください。")
+            st.warning("⚠️ 拡張子（.csv など）を含めてください。")
         else:
+            dup_warn = target_name in existing_filenames
+            if dup_warn:
+                st.warning(f"⚠️ 「{target_name}」は既に取り込み済みです。インポート時に上書きされます。")
             try:
-                signed_url = db.get_gcs_signed_url(target_name)
-                
-                html_code = f"""
-                <div id="upload-container" style="font-family: sans-serif; padding: 15px; border: 1px dashed #007bff; border-radius: 8px; background: white;">
-                    <div id="progress-bar-container" style="width: 100%; height: 10px; background: #eee; border-radius: 5px; overflow: hidden; margin-bottom: 10px; display: none;">
-                        <div id="progress-bar" style="width: 0%; height: 100%; background: #007bff; transition: width 0.2s;"></div>
+                signed_url = db_manager.get_gcs_signed_url(target_name)
+
+                upload_html = f"""
+                <div id="drop-zone" style="
+                    font-family: 'Segoe UI', sans-serif;
+                    border: 2px dashed #a0c4ff;
+                    border-radius: 12px;
+                    background: linear-gradient(135deg, #f0f7ff 0%, #e8f0fe 100%);
+                    padding: 28px 20px;
+                    text-align: center;
+                    cursor: pointer;
+                    transition: all 0.3s ease;
+                " onmouseover="this.style.borderColor='#007bff'; this.style.background='linear-gradient(135deg, #e8f0fe 0%, #d0e2ff 100%)';"
+                  onmouseout="this.style.borderColor='#a0c4ff'; this.style.background='linear-gradient(135deg, #f0f7ff 0%, #e8f0fe 100%)';">
+
+                    <div id="upload-icon" style="font-size: 2.5rem; margin-bottom: 8px;">📂</div>
+                    <div id="upload-label" style="font-size: 1rem; font-weight: 600; color: #333; margin-bottom: 4px;">
+                        ここをクリック、またはファイルをドラッグ＆ドロップ
                     </div>
-                    <p id="status-text" style="font-size: 0.85rem; color: #555; margin-bottom: 10px;">ファイルを選択して開始してください。</p>
-                    <button id="upload-btn" style="padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold;">
-                        📤 GCSへ直接アップロードを開始
-                    </button>
-                    <input type="file" id="file-input" style="display: none;" autocomplete="off">
+                    <div id="upload-hint" style="font-size: 0.8rem; color: #888;">どんなサイズでもOK（200MB以上も対応）</div>
+
+                    <div id="progress-wrap" style="width: 90%; margin: 16px auto 0; display: none;">
+                        <div style="background: #e0e0e0; border-radius: 6px; overflow: hidden; height: 8px;">
+                            <div id="prog-bar" style="width:0%; height:100%; background: linear-gradient(90deg,#007bff,#00b4d8); transition: width .15s;"></div>
+                        </div>
+                        <p id="prog-text" style="font-size: 0.82rem; color: #555; margin-top: 6px;">0%</p>
+                    </div>
+
+                    <input type="file" id="file-pick" style="display:none;" autocomplete="off">
                 </div>
 
                 <script>
-                    const uploadBtn = document.getElementById('upload-btn');
-                    const fileInput = document.getElementById('file-input');
-                    const progressBarContainer = document.getElementById('progress-bar-container');
-                    const progressBar = document.getElementById('progress-bar');
-                    const statusText = document.getElementById('status-text');
-                    
-                    uploadBtn.addEventListener('click', () => fileInput.click());
-                    
-                    fileInput.onchange = async (e) => {{
-                        const file = e.target.files[0];
+                (function() {{
+                    const zone = document.getElementById('drop-zone');
+                    const pick = document.getElementById('file-pick');
+                    const icon = document.getElementById('upload-icon');
+                    const label = document.getElementById('upload-label');
+                    const hint = document.getElementById('upload-hint');
+                    const wrap = document.getElementById('progress-wrap');
+                    const bar  = document.getElementById('prog-bar');
+                    const txt  = document.getElementById('prog-text');
+
+                    zone.addEventListener('click', () => pick.click());
+                    zone.addEventListener('dragover', (e) => {{ e.preventDefault(); zone.style.borderColor='#007bff'; }});
+                    zone.addEventListener('dragleave', () => {{ zone.style.borderColor='#a0c4ff'; }});
+                    zone.addEventListener('drop', (e) => {{
+                        e.preventDefault();
+                        zone.style.borderColor='#a0c4ff';
+                        if (e.dataTransfer.files.length) {{ pick.files = e.dataTransfer.files; pick.dispatchEvent(new Event('change')); }}
+                    }});
+
+                    pick.onchange = () => {{
+                        const file = pick.files[0];
                         if (!file) return;
-                        
-                        progressBarContainer.style.display = 'block';
-                        statusText.innerText = 'アップロード中: ' + file.name + ' (' + (file.size/1024/1024).toFixed(1) + ' MB)...';
-                        uploadBtn.disabled = true;
-                        uploadBtn.style.opacity = '0.5';
-                        
+
+                        icon.innerText = '⏳';
+                        label.innerText = file.name + '  (' + (file.size/1024/1024).toFixed(1) + ' MB)';
+                        hint.innerText = 'アップロードを開始しています...';
+                        wrap.style.display = 'block';
+                        zone.style.cursor = 'default';
+                        zone.onclick = null;
+
                         const xhr = new XMLHttpRequest();
                         xhr.open('PUT', '{signed_url}', true);
                         xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
-                        
-                        xhr.upload.onprogress = (event) => {{
-                            if (event.lengthComputable) {{
-                                const percent = Math.round((event.loaded / event.total) * 100);
-                                progressBar.style.width = percent + '%';
-                                statusText.innerText = '進行中... ' + percent + '% (' + (event.loaded/1024/1024).toFixed(1) + 'MB 送信済み)';
+
+                        xhr.upload.onprogress = (ev) => {{
+                            if (ev.lengthComputable) {{
+                                const pct = Math.round(ev.loaded / ev.total * 100);
+                                bar.style.width = pct + '%';
+                                txt.innerText = pct + '%  (' + (ev.loaded/1024/1024).toFixed(1) + ' / ' + (ev.total/1024/1024).toFixed(1) + ' MB)';
+                                hint.innerText = '送信中...';
                             }}
                         }};
-                        
+
                         xhr.onload = () => {{
                             if (xhr.status === 200) {{
-                                statusText.innerText = '✅ 成功！GCSへの直送が完了しました。下の「GCS内ファイル」を確認してください。';
-                                statusText.style.color = '#28a745';
-                                progressBar.style.background = '#28a745';
+                                icon.innerText = '✅';
+                                label.innerText = 'アップロード完了！';
+                                hint.innerText = '下の「② データベースに取り込む」へ進んでください。';
+                                hint.style.color = '#28a745';
+                                bar.style.background = 'linear-gradient(90deg,#28a745,#5cb85c)';
                             }} else {{
-                                statusText.innerText = '❌ エラー発生 (HTTP ' + xhr.status + ') - ' + xhr.responseText;
-                                statusText.style.color = '#dc3545';
+                                icon.innerText = '❌';
+                                label.innerText = 'エラー (HTTP ' + xhr.status + ')';
+                                hint.innerText = xhr.responseText || 'アップロードに失敗しました。';
+                                hint.style.color = '#dc3545';
                             }}
                         }};
-                        
+
                         xhr.onerror = () => {{
-                            statusText.innerText = '❌ ネットワークエラーが発生しました。CORS設定を確認してください。';
-                            statusText.style.color = '#dc3545';
+                            icon.innerText = '❌';
+                            label.innerText = 'ネットワークエラー';
+                            hint.innerText = '接続を確認してください。';
+                            hint.style.color = '#dc3545';
                         }};
-                        
+
                         xhr.send(file);
                     }};
+                }})();
                 </script>
                 """
-                components.html(html_code, height=150)
+                components.html(upload_html, height=200)
             except Exception as e:
-                st.error(f"署名付きURLの生成に失敗しました: {e}")
-                st.info("サービスアカウントに 'Service Account Token Creator' 権限があるか確認してください。")
-
-
-# --- 3. アップロードタブ (RAW保存) ---
-with tab_upload:
-    st.subheader("📥 RAWデータの取り込み")
-    # すでにアップロード済みのファイル名リストを取得
-    all_raw = raw_df  # キャッシュ済みデータを再利用（BigQuery二重クエリ回避）
-    existing_filenames = set(all_raw['filename'].unique()) if not all_raw.empty else set()
-
-    files = st.file_uploader("ファイルをドロップ", accept_multiple_files=True)
-    
-    # 重複チェックの警告を表示
-    duplicate_files = [f.name for f in files if f.name in existing_filenames] if files else []
-    if duplicate_files:
-        st.warning(f"⚠️ 以下の {len(duplicate_files)} 件のファイルは既に登録されています。\n" + 
-                   ", ".join(duplicate_files[:5]) + ("..." if len(duplicate_files) > 5 else ""))
-        over = st.checkbox("既存ファイルを上書きして保存", value=False)
+                st.error(f"アップロード準備エラー: {e}")
     else:
-        over = st.checkbox("既存ファイルを上書き", value=True)
-    
-    if files and st.button("🚀 データベースに保存", type="primary"):
-        rules = fetch_rules(project_id)
-        success_details = []
-        error_count = 0
-        skip_count = 0
-        with st.status("データ処理中...") as status:
-            for f in files:
-                # 重複かつ上書きチェックなしの場合はスキップ
-                if f.name in existing_filenames and not over:
-                    st.info(f"スキップ (既に存在します): {f.name}")
-                    skip_count += 1
-                    continue
-                    
-                try:
-                    df = processor.parse_raw_only(f, rules=rules)
-                    if df is not None:
-                        s_type = processor.detect_source(f.name)
-                        row_count = db_manager.save_raw_data(df, f.name, s_type, overwrite=over)
-                        success_details.append({"file": f.name, "rows": row_count})
-                    else:
-                        st.error(f"解析失敗: {f.name}")
-                        error_count += 1
-                except Exception as e:
-                    st.error(f"エラー ({f.name}): {e}")
-                    error_count += 1
-            
-            label = f"✅ {len(success_details)} 件のファイルを処理しました"
-            if error_count > 0: label += f" / ❌ {error_count} 件失敗"
-            if skip_count > 0: label += f" / ⏭️ {skip_count} 件スキップ"
-            status.update(label=label, state="complete" if error_count == 0 else "error")
-        
-            if success_details:
-                st.success("🎉 データの取り込みが完了しました！")
-                for item in success_details:
-                    st.write(f"🔹 **{item['file']}**: {item['rows']:,} 件のデータを取り込み完了")
-                
-                st.toast(f"✅ {len(success_details)} 件のファイルを保存しました。", icon="🚀")
-                clear_app_cache()
-                if st.button("🔄 画面を更新してデータを確認する"):
-                    st.rerun()
+        st.markdown("""
+        <div style="border: 2px dashed #ccc; border-radius: 12px; padding: 30px; text-align: center; color: #aaa;">
+            <div style="font-size: 2.5rem; margin-bottom: 8px;">📂</div>
+            <div style="font-size: 0.95rem;">⬆️ まず保存ファイル名を入力してください</div>
+        </div>
+        """, unsafe_allow_html=True)
 
     st.divider()
-    # --- GCS Direct Upload Section ---
-    with st.expander("🐘 大容量ファイル専用 (GCS直送アップローダー)", expanded=False):
-        gcs_direct_uploader_ui(db_manager)
 
-    st.subheader("📦 GCS内の未処理ファイル")
+    # --- ステップ2: GCSからBigQueryへ取り込み ---
+    st.markdown("#### ② データベースに取り込む")
     gcs_blobs = db_manager.list_gcs_files()
     if gcs_blobs:
-        st.caption("GCSにアップロードされたファイルを BigQuery に取り込みます。完了すると GCS からは削除されます。")
+        st.caption("アップロードされたファイルを解析し、BigQuery に保存します。完了後、ストレージからは自動で削除されます。")
+
+        # 一括取り込みボタン
+        if len(gcs_blobs) > 1:
+            if st.button("🚀 すべてまとめて取り込む", type="primary"):
+                rules = fetch_rules(project_id)
+                ok_count = 0
+                with st.status("一括処理中...") as batch_st:
+                    for blob in gcs_blobs:
+                        try:
+                            blob_io = db_manager.get_gcs_blob_io(blob['name'])
+                            df = processor.parse_raw_only(blob_io, rules=rules)
+                            if df is not None:
+                                s_type = processor.detect_source(blob['name'])
+                                db_manager.save_raw_data(df, blob['name'], s_type, overwrite=True)
+                                db_manager.delete_gcs_file(blob['name'])
+                                ok_count += 1
+                        except Exception as e:
+                            st.error(f"エラー ({blob['name']}): {e}")
+                    batch_st.update(label=f"✅ {ok_count} 件を取り込みました", state="complete")
+                clear_app_cache()
+                time.sleep(1)
+                st.rerun()
+
         for blob in gcs_blobs:
             with st.container(border=True):
                 c1, c2, c3 = st.columns([3, 1, 1])
-                c1.write(f"📦 **{blob['name']}** ({blob['size']/1024/1024:.1f} MB)")
-                if c2.button("📥 インポート", key=f"import_gcs_{blob['name']}"):
-                    with st.status(f"{blob['name']} を処理中...") as status:
+                size_mb = blob['size'] / 1024 / 1024 if blob['size'] else 0
+                c1.write(f"📦 **{blob['name']}**  ({size_mb:.1f} MB)")
+                if c2.button("🚀 取り込む", key=f"imp_{blob['name']}"):
+                    with st.status(f"{blob['name']} を処理中...") as imp_st:
                         try:
-                            # GCSからストリームとして取得
                             blob_io = db_manager.get_gcs_blob_io(blob['name'])
                             rules = fetch_rules(project_id)
                             df = processor.parse_raw_only(blob_io, rules=rules)
-                            
                             if df is not None:
                                 s_type = processor.detect_source(blob['name'])
                                 row_count = db_manager.save_raw_data(df, blob['name'], s_type, overwrite=True)
-                                
-                                # 成功したらGCS側を削除
                                 db_manager.delete_gcs_file(blob['name'])
-                                
-                                status.update(label=f"✅ {blob['name']} の取り込み完了 ({row_count:,}件)", state="complete")
-                                st.toast(f"インポート成功: {blob['name']}", icon="✅")
+                                imp_st.update(label=f"✅ {blob['name']} ({row_count:,}件)", state="complete")
+                                st.toast(f"取り込み完了: {blob['name']}", icon="✅")
                                 clear_app_cache()
                                 time.sleep(1)
                                 st.rerun()
@@ -350,30 +360,22 @@ with tab_upload:
                                 st.error("解析に失敗しました。")
                         except Exception as e:
                             st.error(f"エラー: {e}")
-                
-                if c3.button("🗑️ GCSから削除", key=f"del_gcs_{blob['name']}"):
-                    if db_manager.delete_gcs_file(blob['name']):
-                        st.toast(f"GCSから削除しました: {blob['name']}")
-                        st.rerun()
-
+                if c3.button("🗑️ 削除", key=f"delg_{blob['name']}"):
+                    db_manager.delete_gcs_file(blob['name'])
+                    st.rerun()
     else:
-        st.info("GCS内に未処理のファイルはありません。")
+        st.info("💡 ①でアップロードしたファイルがここに表示されます。")
 
     st.divider()
-    st.subheader("📋 アップロード済みデータの一覧")
+
+    # --- 取り込み済みデータ一覧 ---
+    st.markdown("#### 📋 取り込み済みデータ")
     if not all_raw.empty:
-        # ファイルごとのサマリーを表示
-        agg_dict = {
-            'source_type': 'first',
-            'row_index': 'count'
-        }
-        # created_at が存在する場合のみ集計対象に含める
+        agg_dict = {'source_type': 'first', 'row_index': 'count'}
         has_created_at = 'created_at' in all_raw.columns
         if has_created_at:
             agg_dict['created_at'] = 'max'
-            
         file_summary = all_raw.groupby('filename').agg(agg_dict).reset_index()
-        
         if has_created_at:
             file_summary = file_summary.sort_values('created_at', ascending=False)
         else:
@@ -395,7 +397,7 @@ with tab_upload:
                         else:
                             st.error(f"削除に失敗しました: {row['filename']}")
     else:
-        st.info("アップロード済みのデータはありません。")
+        st.info("取り込み済みのデータはありません。")
 
 # --- 3. 管理タブ (リセット & マッピング) ---
 with tab_settings:

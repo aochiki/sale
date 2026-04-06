@@ -125,12 +125,12 @@ with tab_flexible:
             except Exception as e:
                 st.error(f"集計エラー: {e}")
 
-# --- 3. アップロードタブ (GCS直接送信 & シンプルフロー) ---
+# --- 3. アップロードタブ (インテリジェント自動化) ---
 with tab_upload:
     st.subheader("📥 RAWデータ追加")
-    st.caption("200MB以上のファイルも直接アップロード可能です。")
+    st.caption("アップロード完了後、新規ファイルなら自動で取り込みが開始されます。")
 
-    # --- アップロード処理 (JS) ---
+    # --- アップロード処理 (JS: 自動リダイレクト版) ---
     import uuid as _uuid
     if '_upload_slot' not in st.session_state:
         st.session_state._upload_slot = f"_up_{_uuid.uuid4().hex[:8]}"
@@ -177,8 +177,18 @@ with tab_upload:
                 }};
                 xhr.onload=()=>{{
                     if(xhr.status===200) {{
-                        icon.innerText='✅'; label.innerText='アップロード完了';
-                        hint.innerHTML='<a href="?up_blob={temp_blob_name}&fn='+encodeURIComponent(file.name)+'" target="_top" style="display:inline-block; margin-top:10px; padding:10px 20px; background:#28a745; color:white; text-decoration:none; border-radius:5px; font-weight:bold;">次へ進む</a>';
+                        icon.innerText='✅'; label.innerText='アップロード完了！';
+                        hint.innerText='自動的にデータベースへ登録を開始します...';
+                        const jumpUrl = '?up_blob={temp_blob_name}&fn=' + encodeURIComponent(file.name);
+                        // window.top.location.href を使って確実に親画面を遷移させる
+                        setTimeout(() => {{
+                            try {{
+                                window.top.location.href = jumpUrl;
+                            }} catch(e) {{
+                                // サンドボックス制限などで失敗した場合はリンクを表示
+                                hint.innerHTML = '<a href="' + jumpUrl + '" target="_top" style="display:inline-block; margin-top:10px; padding:10px 20px; background:#28a745; color:white; text-decoration:none; border-radius:5px; font-weight:bold;">登録を進める（ここをクリック）</a>';
+                            }}
+                        }}, 1500);
                     }} else {{ label.innerText='エラー: '+xhr.status; }}
                 }};
                 xhr.send(file);
@@ -190,26 +200,32 @@ with tab_upload:
     except Exception as e:
         st.error(f"準備エラー: {e}")
 
-    # --- 取り込み準備 ---
+    # --- インテリジェント自動取り込みロジック ---
     qp = st.query_params
     if "up_blob" in qp and "fn" in qp:
         b_name, r_name = qp["up_blob"], qp["fn"]
-        st.markdown(f"📦 **ファイル準備完了:** `{r_name}`")
+        st.markdown(f"📦 **ファイル受信完了:** `{r_name}`")
         
-        # 重複チェックの復活
+        # 重複チェック
         is_existing = not raw_df.empty and r_name in raw_df['filename'].unique()
+        
+        auto_run = False
         if is_existing:
-            st.warning(f"⚠️ `{r_name}` は既にデータベースに存在します。上書きしますか？")
-            btn_label = "🔥 上書きして登録する"
+            st.warning(f"⚠️ `{r_name}` は既にデータベースに存在します。内容を上書きしますか？")
+            c1, c2 = st.columns([1, 4])
+            if c1.button("🔥 上書き登録", type="primary"):
+                auto_run = True
+            if c2.button("キャンセル"):
+                st.query_params.clear()
+                st.rerun()
         else:
-            st.info("新規データとして登録します。")
-            btn_label = "🚀 データベースに登録する"
+            # 新規なら自動実行を許可
+            auto_run = True
+            st.info("🔄 新規ファイルとして自動登録を開始します。そのままお待ちください...")
 
-        c1, c2 = st.columns([1, 4])
-        if c1.button(btn_label, type="primary"):
-            with st.status("データベースに登録中...") as status:
+        if auto_run:
+            with st.status(f"🚀 {r_name} を処理中...") as status:
                 try:
-                    # リネーム → 解析 → 保存
                     if db_manager.rename_gcs_file(b_name, r_name):
                         blob_io = db_manager.get_gcs_blob_io(r_name)
                         rules = fetch_rules(project_id)
@@ -218,18 +234,16 @@ with tab_upload:
                             s_type = processor.detect_source(r_name)
                             row_count = db_manager.save_raw_data(df, r_name, s_type, overwrite=True)
                             db_manager.delete_gcs_file(r_name)
-                            status.update(label=f"✅ {r_name} ({row_count:,}件) を取り込みました", state="complete")
+                            status.update(label=f"✅ {r_name} ({row_count:,}件) の登録が完了しました", state="complete")
+                            st.toast(f"登録完了: {r_name}", icon="✅")
+                            # 完了後にパラメータを消してリロード
                             st.query_params.clear()
                             clear_app_cache()
-                            time.sleep(1.5)
+                            time.sleep(2)
                             st.rerun()
-                        else: st.error("解析失敗")
-                    else: st.error("ファイル名変更失敗")
-                except Exception as e: st.error(f"エラー: {e}")
-        
-        if c2.button("キャンセル"):
-            st.query_params.clear()
-            st.rerun()
+                        else: st.error("解析に失敗しました。ファイル形式を確認してください。")
+                    else: st.error("GCS上のファイル名変更に失敗しました。")
+                except Exception as e: st.error(f"処理エラー: {e}")
 
     st.divider()
     st.markdown("#### 📋 取り込み済みデータ一覧")
@@ -249,11 +263,10 @@ with tab_upload:
 # --- 4. 管理タブ ---
 with tab_settings:
     st.subheader("⚙️ システム管理")
-    # マッピング設定 (既存ロジックを簡略化して維持)
     cur_mappings = fetch_mappings(project_id)
     with st.expander("🔗 カラムマッピング定義"):
         st.dataframe(cur_mappings, use_container_width=True)
-        st.info("※マッピングの編集は以前のバージョンで行ってください。現在は閲覧のみ可能です。")
+        st.info("※マッピングの編集は以前のバージョンで行ってください。")
 
     st.divider()
     if st.button("🔥 データベース全体を初期化する", type="primary"):

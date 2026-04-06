@@ -1,4 +1,4 @@
-from google.cloud import bigquery
+from google.cloud import storage
 from google.cloud import exceptions
 import pandas as pd
 import datetime
@@ -18,7 +18,9 @@ class DatabaseManager:
     def __init__(self, project_id, dataset_id):
         self.project_id = project_id
         self.dataset_id = dataset_id
+        self.bucket_name = f"music-sales-raw-uploads-32010787277"
         self.client = bigquery.Client(project=project_id, location="asia-northeast1")
+        self.storage_client = storage.Client(project=project_id)
         self._ensure_dataset_exists()
 
     def _ensure_dataset_exists(self):
@@ -210,3 +212,48 @@ class DatabaseManager:
             )).result()
         except exceptions.NotFound:
             pass
+
+    # --- GCS Methods ---
+    def get_gcs_signed_url(self, filename, content_type="application/octet-stream"):
+        """ブラウザから直接アップロードするための署名付きURLを発行する"""
+        bucket = self.storage_client.bucket(self.bucket_name)
+        blob = bucket.blob(filename)
+        
+        url = blob.generate_signed_url(
+            version="v4",
+            expiration=datetime.timedelta(minutes=30),
+            method="PUT",
+            content_type=content_type
+        )
+        return url
+
+    def list_gcs_files(self):
+        """バケット内のファイル一覧を取得する"""
+        try:
+            blobs = self.storage_client.list_blobs(self.bucket_name)
+            return [{"name": b.name, "size": b.size, "updated": b.updated} for b in blobs]
+        except Exception as e:
+            logging.error(f"Failed to list GCS files: {e}")
+            return []
+
+    def delete_gcs_file(self, filename):
+        """GCS上のファイルを削除する"""
+        try:
+            bucket = self.storage_client.bucket(self.bucket_name)
+            bucket.blob(filename).delete()
+            return True
+        except Exception as e:
+            logging.error(f"Failed to delete GCS file {filename}: {e}")
+            return False
+
+    def get_gcs_blob_io(self, filename):
+        """GCS上のファイルをストリームとして読み込むためのIOオブジェクトを返す"""
+        import io
+        bucket = self.storage_client.bucket(self.bucket_name)
+        blob = bucket.blob(filename)
+        byte_stream = io.BytesIO()
+        blob.download_to_file(byte_stream)
+        byte_stream.seek(0)
+        # file-like object として振る舞うために name 属性が必要な場合がある
+        byte_stream.name = filename
+        return byte_stream

@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 from aggregator.processor import SalesAggregator
 from aggregator.database_bq import DatabaseManager
@@ -166,6 +167,93 @@ with tab_flexible:
                 st.error(f"集計エラー: {e}")
                 st.info("選択した項目の組み合わせで集計できませんでした。軸を変更してみてください。")
 
+# --- GCS Helper for App ---
+def gcs_direct_uploader_ui(db):
+    st.markdown("""
+        <div style="background-color: #f0f7ff; padding: 1rem; border-radius: 10px; border-left: 5px solid #007bff; margin-bottom: 1rem;">
+            <strong>🐘 大容量ファイル (32MB以上) の直送モード</strong><br>
+            <small>Cloud Run の制限を回避し、ブラウザから Google のストレージへ直接送信します。</small>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    # 署名付きURLを発行
+    target_name = st.text_input("GCS保存時のファイル名（任意）", placeholder="例: sales_2024_large.csv")
+    
+    if target_name:
+        if "." not in target_name:
+            st.warning("拡張子（.csvなど）を含めて入力してください。")
+        else:
+            try:
+                signed_url = db.get_gcs_signed_url(target_name)
+                
+                html_code = f"""
+                <div id="upload-container" style="font-family: sans-serif; padding: 15px; border: 1px dashed #007bff; border-radius: 8px; background: white;">
+                    <div id="progress-bar-container" style="width: 100%; height: 10px; background: #eee; border-radius: 5px; overflow: hidden; margin-bottom: 10px; display: none;">
+                        <div id="progress-bar" style="width: 0%; height: 100%; background: #007bff; transition: width 0.2s;"></div>
+                    </div>
+                    <p id="status-text" style="font-size: 0.85rem; color: #555; margin-bottom: 10px;">ファイルを選択して開始してください。</p>
+                    <button id="upload-btn" style="padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold;">
+                        📤 GCSへ直接アップロードを開始
+                    </button>
+                    <input type="file" id="file-input" style="display: none;">
+                </div>
+
+                <script>
+                    const uploadBtn = document.getElementById('upload-btn');
+                    const fileInput = document.getElementById('file-input');
+                    const progressBarContainer = document.getElementById('progress-bar-container');
+                    const progressBar = document.getElementById('progress-bar');
+                    const statusText = document.getElementById('status-text');
+                    
+                    uploadBtn.addEventListener('click', () => fileInput.click());
+                    
+                    fileInput.onchange = async (e) => {{
+                        const file = e.target.files[0];
+                        if (!file) return;
+                        
+                        progressBarContainer.style.display = 'block';
+                        statusText.innerText = 'アップロード中: ' + file.name + ' (' + (file.size/1024/1024).toFixed(1) + ' MB)...';
+                        uploadBtn.disabled = true;
+                        uploadBtn.style.opacity = '0.5';
+                        
+                        const xhr = new XMLHttpRequest();
+                        xhr.open('PUT', '{signed_url}', true);
+                        xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+                        
+                        xhr.upload.onprogress = (event) => {{
+                            if (event.lengthComputable) {{
+                                const percent = Math.round((event.loaded / event.total) * 100);
+                                progressBar.style.width = percent + '%';
+                                statusText.innerText = '進行中... ' + percent + '% (' + (event.loaded/1024/1024).toFixed(1) + 'MB 送信済み)';
+                            }}
+                        }};
+                        
+                        xhr.onload = () => {{
+                            if (xhr.status === 200) {{
+                                statusText.innerText = '✅ 成功！GCSへの直送が完了しました。下の「GCS内ファイル」を確認してください。';
+                                statusText.style.color = '#28a745';
+                                progressBar.style.background = '#28a745';
+                            }} else {{
+                                statusText.innerText = '❌ エラー発生 (HTTP ' + xhr.status + ') - ' + xhr.responseText;
+                                statusText.style.color = '#dc3545';
+                            }}
+                        }};
+                        
+                        xhr.onerror = () => {{
+                            statusText.innerText = '❌ ネットワークエラーが発生しました。CORS設定を確認してください。';
+                            statusText.style.color = '#dc3545';
+                        }};
+                        
+                        xhr.send(file);
+                    }};
+                </script>
+                """
+                components.html(html_code, height=150)
+            except Exception as e:
+                st.error(f"署名付きURLの生成に失敗しました: {e}")
+                st.info("サービスアカウントに 'Service Account Token Creator' 権限があるか確認してください。")
+
+
 # --- 3. アップロードタブ (RAW保存) ---
 with tab_upload:
     st.subheader("📥 RAWデータの取り込み")
@@ -215,15 +303,61 @@ with tab_upload:
             if skip_count > 0: label += f" / ⏭️ {skip_count} 件スキップ"
             status.update(label=label, state="complete" if error_count == 0 else "error")
         
-        if success_details:
-            st.success("🎉 データの取り込みが完了しました！")
-            for item in success_details:
-                st.write(f"🔹 **{item['file']}**: {item['rows']:,} 件のデータを取り込み完了")
-            
-            st.toast(f"✅ {len(success_details)} 件のファイルを保存しました。", icon="🚀")
-            clear_app_cache()
-            if st.button("🔄 画面を更新してデータを確認する"):
-                st.rerun()
+            if success_details:
+                st.success("🎉 データの取り込みが完了しました！")
+                for item in success_details:
+                    st.write(f"🔹 **{item['file']}**: {item['rows']:,} 件のデータを取り込み完了")
+                
+                st.toast(f"✅ {len(success_details)} 件のファイルを保存しました。", icon="🚀")
+                clear_app_cache()
+                if st.button("🔄 画面を更新してデータを確認する"):
+                    st.rerun()
+
+    st.divider()
+    # --- GCS Direct Upload Section ---
+    with st.expander("🐘 大容量ファイル専用 (GCS直送アップローダー)", expanded=False):
+        gcs_direct_uploader_ui(db_manager)
+
+    st.subheader("📦 GCS内の未処理ファイル")
+    gcs_blobs = db_manager.list_gcs_files()
+    if gcs_blobs:
+        st.caption("GCSにアップロードされたファイルを BigQuery に取り込みます。完了すると GCS からは削除されます。")
+        for blob in gcs_blobs:
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([3, 1, 1])
+                c1.write(f"📦 **{blob['name']}** ({blob['size']/1024/1024:.1f} MB)")
+                if c2.button("📥 インポート", key=f"import_gcs_{blob['name']}"):
+                    with st.status(f"{blob['name']} を処理中...") as status:
+                        try:
+                            # GCSからストリームとして取得
+                            blob_io = db_manager.get_gcs_blob_io(blob['name'])
+                            rules = fetch_rules(project_id)
+                            df = processor.parse_raw_only(blob_io, rules=rules)
+                            
+                            if df is not None:
+                                s_type = processor.detect_source(blob['name'])
+                                row_count = db_manager.save_raw_data(df, blob['name'], s_type, overwrite=True)
+                                
+                                # 成功したらGCS側を削除
+                                db_manager.delete_gcs_file(blob['name'])
+                                
+                                status.update(label=f"✅ {blob['name']} の取り込み完了 ({row_count:,}件)", state="complete")
+                                st.toast(f"インポート成功: {blob['name']}", icon="✅")
+                                clear_app_cache()
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                st.error("解析に失敗しました。")
+                        except Exception as e:
+                            st.error(f"エラー: {e}")
+                
+                if c3.button("🗑️ GCSから削除", key=f"del_gcs_{blob['name']}"):
+                    if db_manager.delete_gcs_file(blob['name']):
+                        st.toast(f"GCSから削除しました: {blob['name']}")
+                        st.rerun()
+
+    else:
+        st.info("GCS内に未処理のファイルはありません。")
 
     st.divider()
     st.subheader("📋 アップロード済みデータの一覧")

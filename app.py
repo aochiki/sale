@@ -221,21 +221,31 @@ with tab_upload:
         if auto_start:
             with st.status(f"🚀 {r_name} を処理中...") as status:
                 try:
-                    # GCS上のテンポラリファイルを本名へリネームして処理
-                    if db_manager.rename_gcs_file(temp_blob, r_name):
+                    status.update(label=f"🔍 ファイルの内容を読み込んでいます...")
+                    if db_manager.rename_gcs_file(b_name, r_name):
                         blob_io = db_manager.get_gcs_blob_io(r_name)
                         rules = fetch_rules(project_id)
+                        
+                        status.update(label=f"📊 データ構造を解析しています...")
                         df = processor.parse_raw_only(blob_io, rules=rules)
+                        
                         if df is not None:
+                            row_count = len(df)
+                            status.update(label=f"⚡ {row_count:,} 件のデータを検出しました。データベースへ保存中...")
+                            
                             s_type = processor.detect_source(r_name)
                             db_manager.save_raw_data(df, r_name, s_type, overwrite=True)
                             db_manager.delete_gcs_file(r_name) # 取り込み後は削除
-                            status.update(label=f"✅ {r_name} の登録が完了しました", state="complete")
+                            
+                            status.update(label=f"✅ {r_name} ({row_count:,}件) の登録がすべて完了しました！", state="complete")
+                            st.toast(f"登録完了: {r_name} ({row_count:,}件)", icon="✅")
+                            
+                            # 完了後にパラメータを消してリロード
                             st.query_params.clear()
                             clear_app_cache()
-                            time.sleep(2)
+                            time.sleep(2.5) # 完了メッセージを見せるための待機
                             st.rerun()
-                        else: st.error("解析失敗。形式を確認してください。")
+                        else: st.error("解析に失敗しました。ファイル形式を確認してください。")
                     else: st.error("ファイル名確定に失敗したか、ファイルが見つかりません。")
                 except Exception as e: st.error(f"システムエラー: {e}")
 

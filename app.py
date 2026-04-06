@@ -119,7 +119,7 @@ with tab_flexible:
             c1, c2 = st.columns(2)
             if months:
                 start_m = c1.selectbox("🚩 開始月", months, index=0)
-                end_m = c2.selectbox("🏁 終了月", months, index=len(months)-1)
+                end_m = c2.selectbox("🏁 終了月", months, index=len(months)-1 if months else 0)
                 # フィルタ適用
                 flex_df = unified_df[(unified_df[date_col] >= start_m) & (unified_df[date_col] <= end_m)].copy()
             else:
@@ -149,7 +149,6 @@ with tab_flexible:
             try:
                 # ピボットテーブルの生成
                 p_cols = col_axis if col_axis != "(なし)" else None
-                
                 with st.spinner("集計中..."):
                     pivot_res = flex_df.pivot_table(
                         index=row_axis,
@@ -159,11 +158,8 @@ with tab_flexible:
                         margins=True,
                         margins_name="合計"
                     )
-                    
-                    # 見栄えの調整: 数値をカンマ区切りに
                     st.write(f"### 📋 集計結果: {row_axis} " + (f"× {col_axis}" if p_cols else ""))
                     st.dataframe(pivot_res.style.format("{:,.0f}"), use_container_width=True)
-                
             except Exception as e:
                 st.error(f"集計エラー: {e}")
                 st.info("選択した項目の組み合わせで集計できませんでした。軸を変更してみてください。")
@@ -181,24 +177,26 @@ with tab_upload:
         with st.status(f"🚀 {r_name} を自動取り込み中...") as auto_st:
             try:
                 # リネームしてからインポート
-                db_manager.rename_gcs_file(b_name, r_name)
-                blob_io = db_manager.get_gcs_blob_io(r_name)
-                rules = fetch_rules(project_id)
-                df = processor.parse_raw_only(blob_io, rules=rules)
-                if df is not None:
-                    s_type = processor.detect_source(r_name)
-                    row_count = db_manager.save_raw_data(df, r_name, s_type, overwrite=True)
-                    db_manager.delete_gcs_file(r_name)
-                    auto_st.update(label=f"✅ {r_name} ({row_count:,}件) を取り込みました", state="complete")
-                    st.toast(f"自動取り込み完了: {r_name}", icon="✅")
-                    
-                    # パラメータをクリアしてリロード
-                    st.query_params.clear()
-                    clear_app_cache()
-                    time.sleep(1)
-                    st.rerun()
+                if db_manager.rename_gcs_file(b_name, r_name):
+                    blob_io = db_manager.get_gcs_blob_io(r_name)
+                    rules = fetch_rules(project_id)
+                    df = processor.parse_raw_only(blob_io, rules=rules)
+                    if df is not None:
+                        s_type = processor.detect_source(r_name)
+                        row_count = db_manager.save_raw_data(df, r_name, s_type, overwrite=True)
+                        db_manager.delete_gcs_file(r_name)
+                        auto_st.update(label=f"✅ {r_name} ({row_count:,}件) を取り込みました", state="complete")
+                        st.toast(f"自動取り込み完了: {r_name}", icon="✅")
+                    else:
+                        st.error("解析に失敗しました。ファイル形式を確認してください。")
                 else:
-                    st.error("解析に失敗しました。")
+                    st.error(f"GCS上でのリネーム（旧名:{b_name} → 新名:{r_name}）に失敗しました。")
+                
+                # 完了（またはエラー提示後）にパラメータをクリアしてリロードを促す
+                st.query_params.clear()
+                clear_app_cache()
+                time.sleep(1.5)
+                st.rerun()
             except Exception as e:
                 st.error(f"自動取り込みエラー: {e}")
 
@@ -278,7 +276,6 @@ with tab_upload:
 
                 var xhr = new XMLHttpRequest();
                 xhr.open('PUT', '{signed_url}', true);
-                // SignatureDoesNotMatch 回避のため、署名時に指定した Content-Type と完全に一致させる
                 xhr.setRequestHeader('Content-Type', 'application/octet-stream');
                 xhr.upload.onprogress = function(ev) {{
                     if (ev.lengthComputable) {{
@@ -372,21 +369,23 @@ with tab_upload:
                         # リネームしてからインポート
                         with st.status(f"{real_name} を処理中...") as imp_st:
                             try:
-                                db_manager.rename_gcs_file(blob_name, real_name)
-                                blob_io = db_manager.get_gcs_blob_io(real_name)
-                                rules = fetch_rules(project_id)
-                                df = processor.parse_raw_only(blob_io, rules=rules)
-                                if df is not None:
-                                    s_type = processor.detect_source(real_name)
-                                    row_count = db_manager.save_raw_data(df, real_name, s_type, overwrite=True)
-                                    db_manager.delete_gcs_file(real_name)
-                                    imp_st.update(label=f"✅ {real_name} ({row_count:,}件)", state="complete")
-                                    st.toast(f"取り込み完了: {real_name}", icon="✅")
-                                    clear_app_cache()
-                                    time.sleep(1)
-                                    st.rerun()
+                                if db_manager.rename_gcs_file(blob_name, real_name):
+                                    blob_io = db_manager.get_gcs_blob_io(real_name)
+                                    rules = fetch_rules(project_id)
+                                    df = processor.parse_raw_only(blob_io, rules=rules)
+                                    if df is not None:
+                                        s_type = processor.detect_source(real_name)
+                                        row_count = db_manager.save_raw_data(df, real_name, s_type, overwrite=True)
+                                        db_manager.delete_gcs_file(real_name)
+                                        imp_st.update(label=f"✅ {real_name} ({row_count:,}件)", state="complete")
+                                        st.toast(f"取り込み完了: {real_name}", icon="✅")
+                                        clear_app_cache()
+                                        time.sleep(1)
+                                        st.rerun()
+                                    else:
+                                        st.error("解析に失敗しました。")
                                 else:
-                                    st.error("解析に失敗しました。")
+                                    st.error("リネームに失敗しました。")
                             except Exception as e:
                                 st.error(f"エラー: {e}")
                     if c_btn2.button("🗑️ 削除", key=f"delg_{blob_name}"):
@@ -471,15 +470,15 @@ with tab_settings:
 
     with st.form("mapping_form"):
         u_name = st.text_input("統合項目名", value=st.session_state.editing_col if st.session_state.editing_col else "")
-        c2, c3, c4 = st.columns(3)
+        c1, c2, c3 = st.columns(3)
         # ドロップダウン化
         idx_o = h_orchard.index(edit_item['orchard_col']) if edit_item is not None and edit_item['orchard_col'] in h_orchard else 0
         idx_n = h_nextone.index(edit_item['nextone_col']) if edit_item is not None and edit_item['nextone_col'] in h_nextone else 0
         idx_i = h_itunes.index(edit_item['itunes_col']) if edit_item is not None and edit_item['itunes_col'] in h_itunes else 0
         
-        o_col = c2.selectbox("Orchard 列名", h_orchard, index=idx_o)
-        n_col = c3.selectbox("NexTone 列名", h_nextone, index=idx_n)
-        i_col = c4.selectbox("iTunes 列名", h_itunes, index=idx_i)
+        o_col = c1.selectbox("Orchard 列名", h_orchard, index=idx_o)
+        n_col = c2.selectbox("NexTone 列名", h_nextone, index=idx_n)
+        i_col = c3.selectbox("iTunes 列名", h_itunes, index=idx_i)
         
         is_d = st.checkbox("日付として処理 (YYYY-MM-01に統一)", value=bool(edit_item['is_date']) if edit_item is not None else False)
         is_n = st.checkbox("数値として処理", value=bool(edit_item['is_numeric']) if edit_item is not None else False)

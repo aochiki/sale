@@ -222,7 +222,7 @@ with tab_upload:
             with st.status(f"🚀 {r_name} を処理中...") as status:
                 try:
                     status.update(label=f"🔍 ファイルの内容を読み込んでいます...")
-                    if db_manager.rename_gcs_file(b_name, r_name):
+                    if db_manager.rename_gcs_file(temp_blob, r_name):
                         blob_io = db_manager.get_gcs_blob_io(r_name)
                         rules = fetch_rules(project_id)
                         
@@ -245,9 +245,15 @@ with tab_upload:
                             clear_app_cache()
                             time.sleep(2.5) # 完了メッセージを見せるための待機
                             st.rerun()
-                        else: st.error("解析に失敗しました。ファイル形式を確認してください。")
-                    else: st.error("ファイル名確定に失敗したか、ファイルが見つかりません。")
-                except Exception as e: st.error(f"システムエラー: {e}")
+                        else: 
+                            status.update(label="❌ 解析失敗", state="error")
+                            st.error("解析に失敗しました。ファイル形式を確認してください。")
+                    else: 
+                        status.update(label="❌ ファイル移動失敗", state="error")
+                        st.error("ファイル名確定に失敗したか、ファイルが見つかりません。")
+                except Exception as e: 
+                    status.update(label="❌ システムエラー", state="error")
+                    st.error(f"システムエラー: {e}")
 
     st.divider()
     st.markdown("#### 📋 取り込み済み履歴")

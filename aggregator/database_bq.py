@@ -226,10 +226,20 @@ class DatabaseManager:
         # Cloud Run (Compute Engine credentials) では signBlob API を使用
         credentials, _ = google.auth.default()
         
-        if hasattr(credentials, 'service_account_email') and credentials.service_account_email:
-            sa_email = credentials.service_account_email
-        else:
-            sa_email = f"bigquery-data-manager@{self.project_id}.iam.gserviceaccount.com"
+        sa_email = getattr(credentials, 'service_account_email', None)
+        if not sa_email or sa_email == 'default':
+            # Metadata server から実際のメールアドレスを取得を試みる (Cloud Run環境)
+            try:
+                import urllib.request
+                req = urllib.request.Request(
+                    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email",
+                    headers={"Metadata-Flavor": "Google"}
+                )
+                with urllib.request.urlopen(req, timeout=2) as response:
+                    sa_email = response.read().decode("utf-8")
+            except Exception:
+                # 取得失敗時は以前のフォールバックを使用 (プロジェクト設定に依存)
+                sa_email = f"bigquery-data-manager@{self.project_id}.iam.gserviceaccount.com"
         
         # 認証情報をリフレッシュ
         auth_request = auth_requests.Request()

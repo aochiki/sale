@@ -117,11 +117,13 @@ with tab_flexible:
         if date_col:
             months = sorted(unified_df[date_col].dropna().unique().tolist())
             c1, c2 = st.columns(2)
-            start_m = c1.selectbox("🚩 開始月", months, index=0)
-            end_m = c2.selectbox("🏁 終了月", months, index=len(months)-1)
-            
-            # フィルタ適用
-            flex_df = unified_df[(unified_df[date_col] >= start_m) & (unified_df[date_col] <= end_m)].copy()
+            if months:
+                start_m = c1.selectbox("🚩 開始月", months, index=0)
+                end_m = c2.selectbox("🏁 終了月", months, index=len(months)-1)
+                # フィルタ適用
+                flex_df = unified_df[(unified_df[date_col] >= start_m) & (unified_df[date_col] <= end_m)].copy()
+            else:
+                flex_df = unified_df.copy()
         else:
             flex_df = unified_df.copy()
             st.warning("日付項目が定義されていないため、期間絞り込みはスキップされました。")
@@ -146,7 +148,6 @@ with tab_flexible:
         else:
             try:
                 # ピボットテーブルの生成
-                # もしユーザーが「数量」などを軸に選んでしまった場合（mappingsの設定ミス等）への考慮
                 p_cols = col_axis if col_axis != "(なし)" else None
                 
                 with st.spinner("集計中..."):
@@ -167,11 +168,39 @@ with tab_flexible:
                 st.error(f"集計エラー: {e}")
                 st.info("選択した項目の組み合わせで集計できませんでした。軸を変更してみてください。")
 
-
 # --- 3. アップロードタブ (GCS統合) ---
 with tab_upload:
     st.subheader("📥 データファイルのアップロード")
     st.caption("ファイルサイズの制限なし — クリックまたはドラッグでクラウドに直接送信されます。")
+
+    # --- クエリパラメータによる自動取り込み (UX改善) ---
+    qp = st.query_params
+    if "uploaded_blob" in qp and "real_name" in qp:
+        b_name = qp["uploaded_blob"]
+        r_name = qp["real_name"]
+        with st.status(f"🚀 {r_name} を自動取り込み中...") as auto_st:
+            try:
+                # リネームしてからインポート
+                db_manager.rename_gcs_file(b_name, r_name)
+                blob_io = db_manager.get_gcs_blob_io(r_name)
+                rules = fetch_rules(project_id)
+                df = processor.parse_raw_only(blob_io, rules=rules)
+                if df is not None:
+                    s_type = processor.detect_source(r_name)
+                    row_count = db_manager.save_raw_data(df, r_name, s_type, overwrite=True)
+                    db_manager.delete_gcs_file(r_name)
+                    auto_st.update(label=f"✅ {r_name} ({row_count:,}件) を取り込みました", state="complete")
+                    st.toast(f"自動取り込み完了: {r_name}", icon="✅")
+                    
+                    # パラメータをクリアしてリロード
+                    st.query_params.clear()
+                    clear_app_cache()
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error("解析に失敗しました。")
+            except Exception as e:
+                st.error(f"自動取り込みエラー: {e}")
 
     # すでにアップロード済みのファイル名リストを取得
     all_raw = raw_df
@@ -245,7 +274,7 @@ with tab_upload:
                 hint.innerText = '送信中...';
                 wrap.style.display = 'block';
                 zone.style.cursor = 'default';
-                zone.removeEventListener('click', arguments.callee);
+                zone.onclick = null;
 
                 var xhr = new XMLHttpRequest();
                 xhr.open('PUT', '{signed_url}', true);
@@ -260,12 +289,10 @@ with tab_upload:
                 xhr.onload = function() {{
                     if (xhr.status === 200) {{
                         icon.innerText = '✅';
-                        label.innerText = '✅ ' + file.name + ' のアップロード完了！';
-                        hint.innerHTML = '<b>下の「🔄 画面を更新」ボタンを押してください</b>';
+                        label.innerText = '✅ ' + file.name + ' の送信完了！';
+                        hint.innerHTML = '<a href="?uploaded_blob={temp_blob_name}&real_name=' + encodeURIComponent(file.name) + '" target="_top" style="display:inline-block; margin-top:10px; padding:10px 24px; background:#28a745; color:white; text-decoration:none; border-radius:8px; font-weight:bold; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">🚀 データベースに登録する</a>';
                         hint.style.color = '#28a745';
                         bar.style.background = 'linear-gradient(90deg,#28a745,#5cb85c)';
-                        // 元のファイル名をlocalStorageに保存
-                        try {{ localStorage.setItem('{temp_blob_name}', file.name); }} catch(e) {{}}
                     }} else {{
                         icon.innerText = '❌';
                         label.innerText = 'エラー (HTTP ' + xhr.status + ')';
@@ -393,40 +420,41 @@ with tab_upload:
     else:
         st.info("💡 アップロードしたファイルがここに表示されます。「🔄 画面を更新」を押してください。")
 
-    st.divider()
+st.divider()
 
-    # --- 取り込み済みデータ一覧 ---
-    st.markdown("#### 📋 取り込み済みデータ")
-    if not all_raw.empty:
-        agg_dict = {'source_type': 'first', 'row_index': 'count'}
-        has_created_at = 'created_at' in all_raw.columns
-        if has_created_at:
-            agg_dict['created_at'] = 'max'
-        file_summary = all_raw.groupby('filename').agg(agg_dict).reset_index()
-        if has_created_at:
-            file_summary = file_summary.sort_values('created_at', ascending=False)
-        else:
-            file_summary = file_summary.sort_values('filename')
-
-        for i, row in file_summary.iterrows():
-            with st.container(border=True):
-                c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
-                c1.write(f"📄 **{row['filename']}**")
-                c2.write(f"🏷️ {row['source_type']}")
-                c3.write(f"📊 {row['row_index']:,} 件")
-                if c4.button("🗑️ 削除", key=f"del_{row['filename']}_{i}"):
-                    with st.spinner(f"{row['filename']} を削除中..."):
-                        if db_manager.delete_raw_data(row['filename']):
-                            st.toast(f"削除しました: {row['filename']}", icon="🗑️")
-                            clear_app_cache()
-                            time.sleep(1)
-                            st.rerun()
-                        else:
-                            st.error(f"削除に失敗しました: {row['filename']}")
+# --- 取り込み済みデータ一覧 ---
+st.markdown("#### 📋 取り込み済みデータ")
+if not raw_df.empty:
+    all_raw = raw_df
+    agg_dict = {'source_type': 'first', 'row_index': 'count'}
+    has_created_at = 'created_at' in all_raw.columns
+    if has_created_at:
+        agg_dict['created_at'] = 'max'
+    file_summary = all_raw.groupby('filename').agg(agg_dict).reset_index()
+    if has_created_at:
+        file_summary = file_summary.sort_values('created_at', ascending=False)
     else:
-        st.info("取り込み済みのデータはありません。")
+        file_summary = file_summary.sort_values('filename')
 
-# --- 3. 管理タブ (リセット & マッピング) ---
+    for i, row in file_summary.iterrows():
+        with st.container(border=True):
+            c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
+            c1.write(f"📄 **{row['filename']}**")
+            c2.write(f"🏷️ {row['source_type']}")
+            c3.write(f"📊 {row['row_index']:,} 件")
+            if c4.button("🗑️ 削除", key=f"del_{row['filename']}_{i}"):
+                with st.spinner(f"{row['filename']} を削除中..."):
+                    if db_manager.delete_raw_data(row['filename']):
+                        st.toast(f"削除しました: {row['filename']}", icon="🗑️")
+                        clear_app_cache()
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error(f"削除に失敗しました: {row['filename']}")
+else:
+    st.info("取り込み済みのデータはありません。")
+
+# --- 4. 管理タブ (リセット & マッピング) ---
 with tab_settings:
     st.subheader("🔗 統合マッピング定義")
     st.info("RAWデータに含まれるヘッダーをドロップダウンから選択して、統合項目を定義します。")

@@ -6,10 +6,18 @@ import logging
 import json
 
 class DatabaseManager:
+    # RAW テーブルのスキーマ定義（一元管理）
+    RAW_SCHEMA = [
+        bigquery.SchemaField("filename", "STRING"),
+        bigquery.SchemaField("source_type", "STRING"),
+        bigquery.SchemaField("row_index", "INTEGER"),
+        bigquery.SchemaField("raw_row_json", "STRING"),
+        bigquery.SchemaField("uploaded_at", "TIMESTAMP"),
+    ]
+
     def __init__(self, project_id, dataset_id):
         self.project_id = project_id
         self.dataset_id = dataset_id
-        # 東京リージョンを明示的に指定してクライアントを初期化
         self.client = bigquery.Client(project=project_id, location="asia-northeast1")
         self._ensure_dataset_exists()
 
@@ -34,14 +42,7 @@ class DatabaseManager:
         """解析なしで、各行を個別のJSON行として RAW テーブルに保存する"""
         table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
         
-        schema = [
-            bigquery.SchemaField("filename", "STRING"),
-            bigquery.SchemaField("source_type", "STRING"),
-            bigquery.SchemaField("row_index", "INTEGER"),
-            bigquery.SchemaField("raw_row_json", "STRING"),
-            bigquery.SchemaField("uploaded_at", "TIMESTAMP"),
-        ]
-        self._ensure_table_exists(table_id, schema)
+        self._ensure_table_exists(table_id, self.RAW_SCHEMA)
         
         if overwrite:
             query = f"DELETE FROM `{table_id}` WHERE filename = @f"
@@ -68,7 +69,8 @@ class DatabaseManager:
         )
         try:
             self.client.load_table_from_json(data_to_load, table_id, job_config=job_config, location="asia-northeast1").result()
-            logging.info(f"Successfully saved individual rows for RAW data: {filename}")
+            logging.info(f"Successfully saved {len(data_to_load)} rows for RAW data: {filename}")
+            return len(data_to_load)
         except Exception as e:
             logging.error(f"Failed to save RAW individual data: {e}")
             raise

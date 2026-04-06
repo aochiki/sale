@@ -7,6 +7,7 @@ import datetime
 import logging
 import os
 import json
+import time
 
 # --- Page Config ---
 st.set_page_config(
@@ -169,7 +170,7 @@ with tab_flexible:
 with tab_upload:
     st.subheader("📥 RAWデータの取り込み")
     # すでにアップロード済みのファイル名リストを取得
-    all_raw = db_manager.get_raw_data()
+    all_raw = raw_df  # キャッシュ済みデータを再利用（BigQuery二重クエリ回避）
     existing_filenames = set(all_raw['filename'].unique()) if not all_raw.empty else set()
 
     files = st.file_uploader("ファイルをドロップ", accept_multiple_files=True)
@@ -255,7 +256,6 @@ with tab_upload:
                         if db_manager.delete_raw_data(row['filename']):
                             st.toast(f"削除しました: {row['filename']}", icon="🗑️")
                             clear_app_cache()
-                            import time
                             time.sleep(1)
                             st.rerun()
                         else:
@@ -303,7 +303,6 @@ with tab_settings:
                     st.session_state.editing_col = None
                     clear_app_cache()
                     st.toast(f"マッピングを保存しました: {u_name}", icon="✅")
-                    import time
                     time.sleep(2)
                     st.rerun()
                 except Exception as e:
@@ -335,7 +334,6 @@ with tab_settings:
                     db_manager.save_parsing_rule(pat, hr - 1)
                     clear_app_cache()
                     st.toast(f"追加完了: {pat}", icon="➕")
-                    import time
                     time.sleep(2)
                     st.rerun()
                 except Exception as e:
@@ -355,7 +353,6 @@ with tab_settings:
                     db_manager.delete_parsing_rule(row['file_pattern'])
                     clear_app_cache()
                     st.toast(f"削除しました: {row['file_pattern']}", icon="🗑️")
-                    import time
                     time.sleep(2)
                     st.rerun()
 

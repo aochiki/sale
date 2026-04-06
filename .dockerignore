@@ -3,9 +3,10 @@ __pycache__
 .git
 .gitignore
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 .streamlit
 .gemini
 tests
 tmp
-鼓

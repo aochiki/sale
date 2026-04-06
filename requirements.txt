@@ -1,8 +1,4 @@
 streamlit
 pandas
-openpyxl
-sqlalchemy
-plotly
 google-cloud-bigquery
-pandas-gbq
 pyarrow

@@ -24,18 +24,17 @@ class SalesAggregator:
         content_sample = ""
         try:
             file.seek(0)
-            # 最初の数KBを読み込んで区切り文字を推測
             sample_bytes = file.read(4000)
             for enc in ['utf-8-sig', 'utf-8', 'cp932', 'shift-jis']:
                 try:
                     content_sample = sample_bytes.decode(enc)
                     break
-                except:
+                except Exception:
                     continue
-        except:
+        except Exception:
             pass
         
-        # 区切り文字の推測
+        # 区切り文字の推測（サンプルから最も多い区切り文字を優先）
         if content_sample:
             tabs = content_sample.count('\t')
             commas = content_sample.count(',')
@@ -72,21 +71,21 @@ class SalesAggregator:
                 for separator in target_separators:
                     file.seek(0)
                     try:
-                        # header=0 (skiprows適用後) で読み込み
                         df = pd.read_csv(file, sep=separator, skiprows=sr, encoding=enc, on_bad_lines='skip', low_memory=False)
                         if df.empty: continue
                         
-                        # 有効なカラムが2つ以上あれば候補とする
                         if df.shape[1] >= 2:
-                            # 最も列数が多いものを「正解」の可能性が高いと判断して保持
                             if df.shape[1] > max_cols:
                                 max_cols = df.shape[1]
                                 best_df = df
-                                # ルールに基づいた行で成功した場合は即座に返す（レスポンス優先）
-                                if sr == skiprows_to_try[0] and rules is not None and not rules.empty:
-                                    return df
-                    except:
+                            # 列数が5以上なら十分な精度と判断して即リターン
+                            if df.shape[1] >= 5:
+                                return df
+                    except Exception:
                         continue
+            # このskiprowsで既に十分な結果が得られていたら、残りの行は試さない
+            if best_df is not None and max_cols >= 5:
+                return best_df
         
         return best_df
 

@@ -1,3 +1,4 @@
+from google.cloud import bigquery
 from google.cloud import storage
 from google.cloud import exceptions
 import pandas as pd

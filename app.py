@@ -104,7 +104,7 @@ with tab_upload:
     st.caption("アップロードが完了すると、自動的に登録（重複時は警告）が開始されます。")
 
     # 標準アップローダー (1GBまで対応)
-    uploaded_file = st.file_uploader("CSV/TSV/TXT ファイルを選択してください", type=["csv", "tsv", "txt"], key="main_uploader")
+    uploaded_file = st.file_uploader("CSV/TSV/TXT ファイルを選択してください（1GBまで対応）", type=["csv", "tsv", "txt"], key="main_uploader")
 
     if uploaded_file:
         fn = uploaded_file.name

@@ -19,4 +19,4 @@ EXPOSE 8080
 
 # アプリの起動設定
 # --server.port=$PORT を使用して、Cloud Run の仕様に合わせる
-ENTRYPOINT ["sh", "-c", "streamlit run app.py --server.port=${PORT:-8080} --server.address=0.0.0.0 --server.enableCORS=false --server.enableXsrfProtection=false"]
+ENTRYPOINT ["sh", "-c", "streamlit run app.py --server.port=${PORT:-8080} --server.address=0.0.0.0 --server.enableCORS=false --server.enableXsrfProtection=false --server.maxUploadSize=1000"]

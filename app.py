@@ -195,7 +195,7 @@ def gcs_direct_uploader_ui(db):
                     <button id="upload-btn" style="padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold;">
                         📤 GCSへ直接アップロードを開始
                     </button>
-                    <input type="file" id="file-input" style="display: none;">
+                    <input type="file" id="file-input" style="display: none;" autocomplete="off">
                 </div>
 
                 <script>

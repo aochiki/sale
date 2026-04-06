@@ -171,161 +171,128 @@ with tab_flexible:
 # --- 3. アップロードタブ (GCS統合) ---
 with tab_upload:
     st.subheader("📥 データファイルのアップロード")
-    st.caption("ファイルサイズの制限なし — ドラッグ＆ドロップでクラウドに直接送信されます。")
+    st.caption("ファイルサイズの制限なし — クリックまたはドラッグでクラウドに直接送信されます。")
 
     # すでにアップロード済みのファイル名リストを取得
     all_raw = raw_df
     existing_filenames = set(all_raw['filename'].unique()) if not all_raw.empty else set()
 
-    # --- クエリパラメータからファイル名を自動取得（Phase 2） ---
-    qp = st.query_params
-    pending_file = qp.get("upload_file", "")
+    # --- セッション固有の一時ファイル名で署名URLを事前生成 ---
+    import uuid as _uuid
+    if '_upload_slot' not in st.session_state:
+        st.session_state._upload_slot = f"_pending_{_uuid.uuid4().hex[:12]}"
+    
+    temp_blob_name = st.session_state._upload_slot
 
-    if pending_file:
-        # Phase 2: ファイル名が確定 → 署名URL生成 → 自動アップロード
-        st.markdown(f"#### 📤 アップロード中: `{pending_file}`")
-        if pending_file in existing_filenames:
-            st.warning(f"⚠️ 「{pending_file}」は既に取り込み済みです。インポート時に上書きされます。")
-        try:
-            signed_url = db_manager.get_gcs_signed_url(pending_file)
-            auto_upload_html = f"""
-            <div id="drop-zone" style="
-                font-family: 'Segoe UI', sans-serif;
-                border: 2px dashed #007bff;
-                border-radius: 12px;
-                background: linear-gradient(135deg, #e8f0fe 0%, #d0e2ff 100%);
-                padding: 28px 20px;
-                text-align: center;
-                cursor: pointer;
-                transition: all 0.3s ease;
-            ">
-                <div id="upload-icon" style="font-size: 2.5rem; margin-bottom: 8px;">📂</div>
-                <div id="upload-label" style="font-size: 1rem; font-weight: 600; color: #333; margin-bottom: 4px;">
-                    「{pending_file}」をもう一度選択してください
-                </div>
-                <div id="upload-hint" style="font-size: 0.8rem; color: #888;">クリックしてファイルを選ぶと自動でアップロードが始まります</div>
-                <div id="progress-wrap" style="width: 90%; margin: 16px auto 0; display: none;">
-                    <div style="background: #e0e0e0; border-radius: 6px; overflow: hidden; height: 8px;">
-                        <div id="prog-bar" style="width:0%; height:100%; background: linear-gradient(90deg,#007bff,#00b4d8); transition: width .15s;"></div>
-                    </div>
-                    <p id="prog-text" style="font-size: 0.82rem; color: #555; margin-top: 6px;">0%</p>
-                </div>
-                <input type="file" id="file-pick" style="display:none;" autocomplete="off">
-            </div>
-            <script>
-            (function() {{
-                const zone = document.getElementById('drop-zone');
-                const pick = document.getElementById('file-pick');
-                const icon = document.getElementById('upload-icon');
-                const label = document.getElementById('upload-label');
-                const hint = document.getElementById('upload-hint');
-                const wrap = document.getElementById('progress-wrap');
-                const bar  = document.getElementById('prog-bar');
-                const txt  = document.getElementById('prog-text');
-
-                zone.addEventListener('click', () => pick.click());
-                zone.addEventListener('dragover', (e) => {{ e.preventDefault(); zone.style.borderColor='#007bff'; }});
-                zone.addEventListener('dragleave', () => {{ zone.style.borderColor='#a0c4ff'; }});
-                zone.addEventListener('drop', (e) => {{
-                    e.preventDefault();
-                    if (e.dataTransfer.files.length) {{ pick.files = e.dataTransfer.files; pick.dispatchEvent(new Event('change')); }}
-                }});
-
-                pick.onchange = () => {{
-                    const file = pick.files[0];
-                    if (!file) return;
-                    icon.innerText = '⏳';
-                    label.innerText = file.name + '  (' + (file.size/1024/1024).toFixed(1) + ' MB)';
-                    hint.innerText = '送信中...';
-                    wrap.style.display = 'block';
-                    zone.style.cursor = 'default';
-                    zone.onclick = null;
-                    const xhr = new XMLHttpRequest();
-                    xhr.open('PUT', '{signed_url}', true);
-                    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
-                    xhr.upload.onprogress = (ev) => {{
-                        if (ev.lengthComputable) {{
-                            const pct = Math.round(ev.loaded / ev.total * 100);
-                            bar.style.width = pct + '%';
-                            txt.innerText = pct + '%  (' + (ev.loaded/1024/1024).toFixed(1) + ' / ' + (ev.total/1024/1024).toFixed(1) + ' MB)';
-                        }}
-                    }};
-                    xhr.onload = () => {{
-                        if (xhr.status === 200) {{
-                            icon.innerText = '✅';
-                            label.innerText = 'アップロード完了！';
-                            hint.innerText = '画面を更新して「② 取り込む」へ進んでください。';
-                            hint.style.color = '#28a745';
-                            bar.style.background = 'linear-gradient(90deg,#28a745,#5cb85c)';
-                        }} else {{
-                            icon.innerText = '❌';
-                            label.innerText = 'エラー (HTTP ' + xhr.status + ')';
-                            hint.innerText = xhr.responseText || 'アップロードに失敗しました。';
-                            hint.style.color = '#dc3545';
-                        }}
-                    }};
-                    xhr.onerror = () => {{
-                        icon.innerText = '❌';
-                        label.innerText = 'ネットワークエラー';
-                        hint.style.color = '#dc3545';
-                    }};
-                    xhr.send(file);
-                }};
-            }})();
-            </script>
-            """
-            components.html(auto_upload_html, height=200)
-        except Exception as e:
-            st.error(f"アップロード準備エラー: {e}")
+    try:
+        signed_url = db_manager.get_gcs_signed_url(temp_blob_name)
         
-        if st.button("🔄 完了したら画面を更新"):
-            st.query_params.clear()
-            st.rerun()
-    else:
-        # Phase 1: ファイルを選択 → ファイル名を取得してリロード
-        phase1_html = """
+        upload_html = f"""
         <div id="drop-zone" style="
             font-family: 'Segoe UI', sans-serif;
             border: 2px dashed #a0c4ff;
             border-radius: 12px;
             background: linear-gradient(135deg, #f0f7ff 0%, #e8f0fe 100%);
-            padding: 36px 20px;
+            padding: 32px 20px;
             text-align: center;
             cursor: pointer;
             transition: all 0.3s ease;
-        " onmouseover="this.style.borderColor='#007bff'; this.style.background='linear-gradient(135deg, #e8f0fe 0%, #d0e2ff 100%)';"
-          onmouseout="this.style.borderColor='#a0c4ff'; this.style.background='linear-gradient(135deg, #f0f7ff 0%, #e8f0fe 100%)';">
-            <div style="font-size: 2.8rem; margin-bottom: 10px;">📂</div>
-            <div style="font-size: 1.05rem; font-weight: 600; color: #333; margin-bottom: 6px;">
-                ここにファイルをドラッグ＆ドロップ
+        ">
+            <div id="upload-icon" style="font-size: 2.8rem; margin-bottom: 8px;">📂</div>
+            <div id="upload-label" style="font-size: 1.05rem; font-weight: 600; color: #333; margin-bottom: 6px;">
+                ここをクリックしてファイルを選択
             </div>
-            <div style="font-size: 0.85rem; color: #888;">またはクリックしてファイルを選択（サイズ制限なし）</div>
+            <div id="upload-hint" style="font-size: 0.85rem; color: #888;">またはファイルをここにドラッグ＆ドロップ（サイズ制限なし）</div>
+
+            <div id="progress-wrap" style="width: 90%; margin: 16px auto 0; display: none;">
+                <div style="background: #e0e0e0; border-radius: 6px; overflow: hidden; height: 8px;">
+                    <div id="prog-bar" style="width:0%; height:100%; background: linear-gradient(90deg,#007bff,#00b4d8); transition: width .15s;"></div>
+                </div>
+                <p id="prog-text" style="font-size: 0.82rem; color: #555; margin-top: 6px;">0%</p>
+            </div>
             <input type="file" id="file-pick" style="display:none;" autocomplete="off">
         </div>
         <script>
-        (function() {
+        (function() {{
             const zone = document.getElementById('drop-zone');
             const pick = document.getElementById('file-pick');
-            zone.addEventListener('click', () => pick.click());
-            zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.style.borderColor='#007bff'; });
-            zone.addEventListener('dragleave', () => { zone.style.borderColor='#a0c4ff'; });
-            zone.addEventListener('drop', (e) => {
-                e.preventDefault();
+            const icon = document.getElementById('upload-icon');
+            const label = document.getElementById('upload-label');
+            const hint = document.getElementById('upload-hint');
+            const wrap = document.getElementById('progress-wrap');
+            const bar  = document.getElementById('prog-bar');
+            const txt  = document.getElementById('prog-text');
+
+            zone.addEventListener('click', function() {{ pick.click(); }});
+            zone.addEventListener('dragenter', function(e) {{ e.preventDefault(); e.stopPropagation(); zone.style.borderColor='#007bff'; zone.style.background='linear-gradient(135deg, #e8f0fe 0%, #d0e2ff 100%)'; }});
+            zone.addEventListener('dragover', function(e) {{ e.preventDefault(); e.stopPropagation(); }});
+            zone.addEventListener('dragleave', function(e) {{ e.preventDefault(); e.stopPropagation(); zone.style.borderColor='#a0c4ff'; zone.style.background='linear-gradient(135deg, #f0f7ff 0%, #e8f0fe 100%)'; }});
+            zone.addEventListener('drop', function(e) {{
+                e.preventDefault(); e.stopPropagation();
                 zone.style.borderColor='#a0c4ff';
-                if (e.dataTransfer.files.length) { pick.files = e.dataTransfer.files; pick.dispatchEvent(new Event('change')); }
-            });
-            pick.onchange = () => {
-                const file = pick.files[0];
-                if (!file) return;
-                // ファイル名をクエリパラメータにセットしてStreamlitをリロード
-                const url = new URL(window.parent.location.href);
-                url.searchParams.set('upload_file', file.name);
-                window.parent.location.href = url.toString();
-            };
-        })();
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {{
+                    pick.files = e.dataTransfer.files;
+                    doUpload(pick.files[0]);
+                }}
+            }});
+            pick.addEventListener('change', function() {{
+                if (pick.files && pick.files.length > 0) {{ doUpload(pick.files[0]); }}
+            }});
+
+            function doUpload(file) {{
+                icon.innerText = '⏳';
+                label.innerText = file.name + '  (' + (file.size/1024/1024).toFixed(1) + ' MB)';
+                hint.innerText = '送信中...';
+                wrap.style.display = 'block';
+                zone.style.cursor = 'default';
+                zone.removeEventListener('click', arguments.callee);
+
+                var xhr = new XMLHttpRequest();
+                xhr.open('PUT', '{signed_url}', true);
+                xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+                xhr.upload.onprogress = function(ev) {{
+                    if (ev.lengthComputable) {{
+                        var pct = Math.round(ev.loaded / ev.total * 100);
+                        bar.style.width = pct + '%';
+                        txt.innerText = pct + '%  (' + (ev.loaded/1024/1024).toFixed(1) + ' / ' + (ev.total/1024/1024).toFixed(1) + ' MB)';
+                    }}
+                }};
+                xhr.onload = function() {{
+                    if (xhr.status === 200) {{
+                        icon.innerText = '✅';
+                        label.innerText = '✅ ' + file.name + ' のアップロード完了！';
+                        hint.innerHTML = '<b>下の「🔄 画面を更新」ボタンを押してください</b>';
+                        hint.style.color = '#28a745';
+                        bar.style.background = 'linear-gradient(90deg,#28a745,#5cb85c)';
+                        // 元のファイル名をlocalStorageに保存
+                        try {{ localStorage.setItem('{temp_blob_name}', file.name); }} catch(e) {{}}
+                    }} else {{
+                        icon.innerText = '❌';
+                        label.innerText = 'エラー (HTTP ' + xhr.status + ')';
+                        hint.innerText = xhr.responseText || 'アップロードに失敗しました。';
+                        hint.style.color = '#dc3545';
+                    }}
+                }};
+                xhr.onerror = function() {{
+                    icon.innerText = '❌';
+                    label.innerText = 'ネットワークエラー';
+                    hint.innerText = '接続を確認してリトライしてください。';
+                    hint.style.color = '#dc3545';
+                }};
+                xhr.send(file);
+            }}
+        }})();
         </script>
         """
-        components.html(phase1_html, height=200)
+        components.html(upload_html, height=210)
+    except Exception as e:
+        st.error(f"アップロード準備エラー: {e}")
+
+    if st.button("🔄 画面を更新"):
+        # 次回のアップロード用に新しいスロットを生成
+        st.session_state._upload_slot = f"_pending_{_uuid.uuid4().hex[:12]}"
+        clear_app_cache()
+        st.rerun()
 
     st.divider()
 
@@ -358,34 +325,73 @@ with tab_upload:
                 st.rerun()
 
         for blob in gcs_blobs:
+            blob_name = blob['name']
+            is_pending = blob_name.startswith("_pending_")
             with st.container(border=True):
-                c1, c2, c3 = st.columns([3, 1, 1])
                 size_mb = blob['size'] / 1024 / 1024 if blob['size'] else 0
-                c1.write(f"📦 **{blob['name']}**  ({size_mb:.1f} MB)")
-                if c2.button("🚀 取り込む", key=f"imp_{blob['name']}"):
-                    with st.status(f"{blob['name']} を処理中...") as imp_st:
-                        try:
-                            blob_io = db_manager.get_gcs_blob_io(blob['name'])
-                            rules = fetch_rules(project_id)
-                            df = processor.parse_raw_only(blob_io, rules=rules)
-                            if df is not None:
-                                s_type = processor.detect_source(blob['name'])
-                                row_count = db_manager.save_raw_data(df, blob['name'], s_type, overwrite=True)
-                                db_manager.delete_gcs_file(blob['name'])
-                                imp_st.update(label=f"✅ {blob['name']} ({row_count:,}件)", state="complete")
-                                st.toast(f"取り込み完了: {blob['name']}", icon="✅")
-                                clear_app_cache()
-                                time.sleep(1)
-                                st.rerun()
-                            else:
-                                st.error("解析に失敗しました。")
-                        except Exception as e:
-                            st.error(f"エラー: {e}")
-                if c3.button("🗑️ 削除", key=f"delg_{blob['name']}"):
-                    db_manager.delete_gcs_file(blob['name'])
-                    st.rerun()
+                
+                if is_pending:
+                    # 一時ファイル名 → リネーム入力欄を表示
+                    real_name = st.text_input(
+                        "取り込み先のファイル名",
+                        placeholder="例: DivSiteAll-202602-xxx.tsv",
+                        help="元のファイル名（拡張子を含む）を入力してください。ソース自動判定に使われます。",
+                        key=f"rename_{blob_name}"
+                    )
+                    st.caption(f"📦 一時データ ({size_mb:.1f} MB)")
+                    c_btn1, c_btn2 = st.columns([1, 1])
+                    if c_btn1.button("🚀 取り込む", key=f"imp_{blob_name}", disabled=not real_name):
+                        # リネームしてからインポート
+                        with st.status(f"{real_name} を処理中...") as imp_st:
+                            try:
+                                db_manager.rename_gcs_file(blob_name, real_name)
+                                blob_io = db_manager.get_gcs_blob_io(real_name)
+                                rules = fetch_rules(project_id)
+                                df = processor.parse_raw_only(blob_io, rules=rules)
+                                if df is not None:
+                                    s_type = processor.detect_source(real_name)
+                                    row_count = db_manager.save_raw_data(df, real_name, s_type, overwrite=True)
+                                    db_manager.delete_gcs_file(real_name)
+                                    imp_st.update(label=f"✅ {real_name} ({row_count:,}件)", state="complete")
+                                    st.toast(f"取り込み完了: {real_name}", icon="✅")
+                                    clear_app_cache()
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error("解析に失敗しました。")
+                            except Exception as e:
+                                st.error(f"エラー: {e}")
+                    if c_btn2.button("🗑️ 削除", key=f"delg_{blob_name}"):
+                        db_manager.delete_gcs_file(blob_name)
+                        st.rerun()
+                else:
+                    # 通常のファイル名
+                    c1, c2, c3 = st.columns([3, 1, 1])
+                    c1.write(f"📦 **{blob_name}**  ({size_mb:.1f} MB)")
+                    if c2.button("🚀 取り込む", key=f"imp_{blob_name}"):
+                        with st.status(f"{blob_name} を処理中...") as imp_st:
+                            try:
+                                blob_io = db_manager.get_gcs_blob_io(blob_name)
+                                rules = fetch_rules(project_id)
+                                df = processor.parse_raw_only(blob_io, rules=rules)
+                                if df is not None:
+                                    s_type = processor.detect_source(blob_name)
+                                    row_count = db_manager.save_raw_data(df, blob_name, s_type, overwrite=True)
+                                    db_manager.delete_gcs_file(blob_name)
+                                    imp_st.update(label=f"✅ {blob_name} ({row_count:,}件)", state="complete")
+                                    st.toast(f"取り込み完了: {blob_name}", icon="✅")
+                                    clear_app_cache()
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error("解析に失敗しました。")
+                            except Exception as e:
+                                st.error(f"エラー: {e}")
+                    if c3.button("🗑️ 削除", key=f"delg_{blob_name}"):
+                        db_manager.delete_gcs_file(blob_name)
+                        st.rerun()
     else:
-        st.info("💡 ①でアップロードしたファイルがここに表示されます。")
+        st.info("💡 アップロードしたファイルがここに表示されます。「🔄 画面を更新」を押してください。")
 
     st.divider()
 

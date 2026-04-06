@@ -258,3 +258,15 @@ class DatabaseManager:
         # file-like object として振る舞うために name 属性が必要な場合がある
         byte_stream.name = filename
         return byte_stream
+
+    def rename_gcs_file(self, old_name, new_name):
+        """GCS上のファイルをリネームする（コピー＋削除）"""
+        try:
+            bucket = self.storage_client.bucket(self.bucket_name)
+            blob = bucket.blob(old_name)
+            bucket.copy_blob(blob, bucket, new_name)
+            blob.delete()
+            return True
+        except Exception as e:
+            logging.error(f"Failed to rename GCS file {old_name} -> {new_name}: {e}")
+            return False

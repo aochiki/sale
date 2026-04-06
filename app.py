@@ -288,9 +288,16 @@ with tab_upload:
                     if (xhr.status === 200) {{
                         icon.innerText = '✅';
                         label.innerText = '✅ ' + file.name + ' の送信完了！';
-                        hint.innerHTML = '<a href="?uploaded_blob={temp_blob_name}&real_name=' + encodeURIComponent(file.name) + '" target="_top" onclick="event.stopPropagation();" style="display:inline-block; margin-top:10px; padding:10px 24px; background:#28a745; color:white; text-decoration:none; border-radius:8px; font-weight:bold; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">🚀 データベースに登録する</a>';
+                        const jumpUrl = '?uploaded_blob={temp_blob_name}&real_name=' + encodeURIComponent(file.name);
+                        hint.innerHTML = '<div style="margin-top:10px;"><b>自動的にデータベース登録を開始します...</b><br><a id="auto-link" href="' + jumpUrl + '" target="_top" onclick="event.stopPropagation();" style="display:inline-block; margin-top:10px; padding:10px 24px; background:#28a745; color:white; text-decoration:none; border-radius:8px; font-weight:bold; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">すぐに登録する</a></div>';
                         hint.style.color = '#28a745';
                         bar.style.background = 'linear-gradient(90deg,#28a745,#5cb85c)';
+                        
+                        // 1.5秒後に自動クリックして親画面を遷移させる
+                        setTimeout(function() {{
+                            const link = document.getElementById('auto-link');
+                            if (link) link.click();
+                        }}, 1500);
                     }} else {{
                         icon.innerText = '❌';
                         label.innerText = 'エラー (HTTP ' + xhr.status + ')';
@@ -322,10 +329,10 @@ with tab_upload:
     st.divider()
 
     # --- ステップ2: GCSからBigQueryへ取り込み ---
-    st.markdown("#### ② データベースに取り込む")
+    st.markdown("#### ② データベースに取り込む (手動)")
     gcs_blobs = db_manager.list_gcs_files()
     if gcs_blobs:
-        st.caption("アップロードされたファイルを解析し、BigQuery に保存します。完了後、ストレージからは自動で削除されます。")
+        st.caption("※アップロード後は通常、自動的に取り込まれます。自動で開始されない場合のみ以下のファイルを選択してください。")
 
         # 一括取り込みボタン
         if len(gcs_blobs) > 1:
@@ -335,6 +342,9 @@ with tab_upload:
                 with st.status("一括処理中...") as batch_st:
                     for blob in gcs_blobs:
                         try:
+                            # _pending_ の場合は無視（自動フローに任せる）
+                            if blob['name'].startswith("_pending_"): continue
+                            
                             blob_io = db_manager.get_gcs_blob_io(blob['name'])
                             df = processor.parse_raw_only(blob_io, rules=rules)
                             if df is not None:
@@ -356,39 +366,9 @@ with tab_upload:
                 size_mb = blob['size'] / 1024 / 1024 if blob['size'] else 0
                 
                 if is_pending:
-                    # 一時ファイル名 → リネーム入力欄を表示
-                    real_name = st.text_input(
-                        "取り込み先のファイル名",
-                        placeholder="例: DivSiteAll-202602-xxx.tsv",
-                        help="元のファイル名（拡張子を含む）を入力してください。ソース自動判定に使われます。",
-                        key=f"rename_{blob_name}"
-                    )
-                    st.caption(f"📦 一時データ ({size_mb:.1f} MB)")
-                    c_btn1, c_btn2 = st.columns([1, 1])
-                    if c_btn1.button("🚀 取り込む", key=f"imp_{blob_name}", disabled=not real_name):
-                        # リネームしてからインポート
-                        with st.status(f"{real_name} を処理中...") as imp_st:
-                            try:
-                                if db_manager.rename_gcs_file(blob_name, real_name):
-                                    blob_io = db_manager.get_gcs_blob_io(real_name)
-                                    rules = fetch_rules(project_id)
-                                    df = processor.parse_raw_only(blob_io, rules=rules)
-                                    if df is not None:
-                                        s_type = processor.detect_source(real_name)
-                                        row_count = db_manager.save_raw_data(df, real_name, s_type, overwrite=True)
-                                        db_manager.delete_gcs_file(real_name)
-                                        imp_st.update(label=f"✅ {real_name} ({row_count:,}件)", state="complete")
-                                        st.toast(f"取り込み完了: {real_name}", icon="✅")
-                                        clear_app_cache()
-                                        time.sleep(1)
-                                        st.rerun()
-                                    else:
-                                        st.error("解析に失敗しました。")
-                                else:
-                                    st.error("リネームに失敗しました。")
-                            except Exception as e:
-                                st.error(f"エラー: {e}")
-                    if c_btn2.button("🗑️ 削除", key=f"delg_{blob_name}"):
+                    # 一時ファイル名は自動フローで処理されるため、表示のみ
+                    st.caption(f"📦 一時データ ({size_mb:.1f} MB) - 自動処理中")
+                    if st.button("🗑️ 削除", key=f"delg_{blob_name}"):
                         db_manager.delete_gcs_file(blob_name)
                         st.rerun()
                 else:
@@ -417,8 +397,6 @@ with tab_upload:
                     if c3.button("🗑️ 削除", key=f"delg_{blob_name}"):
                         db_manager.delete_gcs_file(blob_name)
                         st.rerun()
-    else:
-        st.info("💡 アップロードしたファイルがここに表示されます。「🔄 画面を更新」を押してください。")
 
 st.divider()
 

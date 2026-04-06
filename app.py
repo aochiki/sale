@@ -171,140 +171,161 @@ with tab_flexible:
 # --- 3. アップロードタブ (GCS統合) ---
 with tab_upload:
     st.subheader("📥 データファイルのアップロード")
-    st.caption("ファイルサイズの制限なし — ブラウザからクラウドストレージへ直接送信されます。")
+    st.caption("ファイルサイズの制限なし — ドラッグ＆ドロップでクラウドに直接送信されます。")
 
     # すでにアップロード済みのファイル名リストを取得
     all_raw = raw_df
     existing_filenames = set(all_raw['filename'].unique()) if not all_raw.empty else set()
 
-    # --- ステップ1: ファイルのアップロード ---
-    st.markdown("#### ① ファイルをアップロード")
-    target_name = st.text_input(
-        "保存ファイル名",
-        placeholder="例: orchard_sales_2024Q1.csv",
-        help="アップロード先に使うファイル名を入力してください（拡張子 .csv を含む）。"
-    )
+    # --- クエリパラメータからファイル名を自動取得（Phase 2） ---
+    qp = st.query_params
+    pending_file = qp.get("upload_file", "")
 
-    if target_name:
-        if "." not in target_name:
-            st.warning("⚠️ 拡張子（.csv など）を含めてください。")
-        else:
-            dup_warn = target_name in existing_filenames
-            if dup_warn:
-                st.warning(f"⚠️ 「{target_name}」は既に取り込み済みです。インポート時に上書きされます。")
-            try:
-                signed_url = db_manager.get_gcs_signed_url(target_name)
-
-                upload_html = f"""
-                <div id="drop-zone" style="
-                    font-family: 'Segoe UI', sans-serif;
-                    border: 2px dashed #a0c4ff;
-                    border-radius: 12px;
-                    background: linear-gradient(135deg, #f0f7ff 0%, #e8f0fe 100%);
-                    padding: 28px 20px;
-                    text-align: center;
-                    cursor: pointer;
-                    transition: all 0.3s ease;
-                " onmouseover="this.style.borderColor='#007bff'; this.style.background='linear-gradient(135deg, #e8f0fe 0%, #d0e2ff 100%)';"
-                  onmouseout="this.style.borderColor='#a0c4ff'; this.style.background='linear-gradient(135deg, #f0f7ff 0%, #e8f0fe 100%)';">
-
-                    <div id="upload-icon" style="font-size: 2.5rem; margin-bottom: 8px;">📂</div>
-                    <div id="upload-label" style="font-size: 1rem; font-weight: 600; color: #333; margin-bottom: 4px;">
-                        ここをクリック、またはファイルをドラッグ＆ドロップ
-                    </div>
-                    <div id="upload-hint" style="font-size: 0.8rem; color: #888;">どんなサイズでもOK（200MB以上も対応）</div>
-
-                    <div id="progress-wrap" style="width: 90%; margin: 16px auto 0; display: none;">
-                        <div style="background: #e0e0e0; border-radius: 6px; overflow: hidden; height: 8px;">
-                            <div id="prog-bar" style="width:0%; height:100%; background: linear-gradient(90deg,#007bff,#00b4d8); transition: width .15s;"></div>
-                        </div>
-                        <p id="prog-text" style="font-size: 0.82rem; color: #555; margin-top: 6px;">0%</p>
-                    </div>
-
-                    <input type="file" id="file-pick" style="display:none;" autocomplete="off">
+    if pending_file:
+        # Phase 2: ファイル名が確定 → 署名URL生成 → 自動アップロード
+        st.markdown(f"#### 📤 アップロード中: `{pending_file}`")
+        if pending_file in existing_filenames:
+            st.warning(f"⚠️ 「{pending_file}」は既に取り込み済みです。インポート時に上書きされます。")
+        try:
+            signed_url = db_manager.get_gcs_signed_url(pending_file)
+            auto_upload_html = f"""
+            <div id="drop-zone" style="
+                font-family: 'Segoe UI', sans-serif;
+                border: 2px dashed #007bff;
+                border-radius: 12px;
+                background: linear-gradient(135deg, #e8f0fe 0%, #d0e2ff 100%);
+                padding: 28px 20px;
+                text-align: center;
+                cursor: pointer;
+                transition: all 0.3s ease;
+            ">
+                <div id="upload-icon" style="font-size: 2.5rem; margin-bottom: 8px;">📂</div>
+                <div id="upload-label" style="font-size: 1rem; font-weight: 600; color: #333; margin-bottom: 4px;">
+                    「{pending_file}」をもう一度選択してください
                 </div>
+                <div id="upload-hint" style="font-size: 0.8rem; color: #888;">クリックしてファイルを選ぶと自動でアップロードが始まります</div>
+                <div id="progress-wrap" style="width: 90%; margin: 16px auto 0; display: none;">
+                    <div style="background: #e0e0e0; border-radius: 6px; overflow: hidden; height: 8px;">
+                        <div id="prog-bar" style="width:0%; height:100%; background: linear-gradient(90deg,#007bff,#00b4d8); transition: width .15s;"></div>
+                    </div>
+                    <p id="prog-text" style="font-size: 0.82rem; color: #555; margin-top: 6px;">0%</p>
+                </div>
+                <input type="file" id="file-pick" style="display:none;" autocomplete="off">
+            </div>
+            <script>
+            (function() {{
+                const zone = document.getElementById('drop-zone');
+                const pick = document.getElementById('file-pick');
+                const icon = document.getElementById('upload-icon');
+                const label = document.getElementById('upload-label');
+                const hint = document.getElementById('upload-hint');
+                const wrap = document.getElementById('progress-wrap');
+                const bar  = document.getElementById('prog-bar');
+                const txt  = document.getElementById('prog-text');
 
-                <script>
-                (function() {{
-                    const zone = document.getElementById('drop-zone');
-                    const pick = document.getElementById('file-pick');
-                    const icon = document.getElementById('upload-icon');
-                    const label = document.getElementById('upload-label');
-                    const hint = document.getElementById('upload-hint');
-                    const wrap = document.getElementById('progress-wrap');
-                    const bar  = document.getElementById('prog-bar');
-                    const txt  = document.getElementById('prog-text');
+                zone.addEventListener('click', () => pick.click());
+                zone.addEventListener('dragover', (e) => {{ e.preventDefault(); zone.style.borderColor='#007bff'; }});
+                zone.addEventListener('dragleave', () => {{ zone.style.borderColor='#a0c4ff'; }});
+                zone.addEventListener('drop', (e) => {{
+                    e.preventDefault();
+                    if (e.dataTransfer.files.length) {{ pick.files = e.dataTransfer.files; pick.dispatchEvent(new Event('change')); }}
+                }});
 
-                    zone.addEventListener('click', () => pick.click());
-                    zone.addEventListener('dragover', (e) => {{ e.preventDefault(); zone.style.borderColor='#007bff'; }});
-                    zone.addEventListener('dragleave', () => {{ zone.style.borderColor='#a0c4ff'; }});
-                    zone.addEventListener('drop', (e) => {{
-                        e.preventDefault();
-                        zone.style.borderColor='#a0c4ff';
-                        if (e.dataTransfer.files.length) {{ pick.files = e.dataTransfer.files; pick.dispatchEvent(new Event('change')); }}
-                    }});
-
-                    pick.onchange = () => {{
-                        const file = pick.files[0];
-                        if (!file) return;
-
-                        icon.innerText = '⏳';
-                        label.innerText = file.name + '  (' + (file.size/1024/1024).toFixed(1) + ' MB)';
-                        hint.innerText = 'アップロードを開始しています...';
-                        wrap.style.display = 'block';
-                        zone.style.cursor = 'default';
-                        zone.onclick = null;
-
-                        const xhr = new XMLHttpRequest();
-                        xhr.open('PUT', '{signed_url}', true);
-                        xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
-
-                        xhr.upload.onprogress = (ev) => {{
-                            if (ev.lengthComputable) {{
-                                const pct = Math.round(ev.loaded / ev.total * 100);
-                                bar.style.width = pct + '%';
-                                txt.innerText = pct + '%  (' + (ev.loaded/1024/1024).toFixed(1) + ' / ' + (ev.total/1024/1024).toFixed(1) + ' MB)';
-                                hint.innerText = '送信中...';
-                            }}
-                        }};
-
-                        xhr.onload = () => {{
-                            if (xhr.status === 200) {{
-                                icon.innerText = '✅';
-                                label.innerText = 'アップロード完了！';
-                                hint.innerText = '下の「② データベースに取り込む」へ進んでください。';
-                                hint.style.color = '#28a745';
-                                bar.style.background = 'linear-gradient(90deg,#28a745,#5cb85c)';
-                            }} else {{
-                                icon.innerText = '❌';
-                                label.innerText = 'エラー (HTTP ' + xhr.status + ')';
-                                hint.innerText = xhr.responseText || 'アップロードに失敗しました。';
-                                hint.style.color = '#dc3545';
-                            }}
-                        }};
-
-                        xhr.onerror = () => {{
-                            icon.innerText = '❌';
-                            label.innerText = 'ネットワークエラー';
-                            hint.innerText = '接続を確認してください。';
-                            hint.style.color = '#dc3545';
-                        }};
-
-                        xhr.send(file);
+                pick.onchange = () => {{
+                    const file = pick.files[0];
+                    if (!file) return;
+                    icon.innerText = '⏳';
+                    label.innerText = file.name + '  (' + (file.size/1024/1024).toFixed(1) + ' MB)';
+                    hint.innerText = '送信中...';
+                    wrap.style.display = 'block';
+                    zone.style.cursor = 'default';
+                    zone.onclick = null;
+                    const xhr = new XMLHttpRequest();
+                    xhr.open('PUT', '{signed_url}', true);
+                    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+                    xhr.upload.onprogress = (ev) => {{
+                        if (ev.lengthComputable) {{
+                            const pct = Math.round(ev.loaded / ev.total * 100);
+                            bar.style.width = pct + '%';
+                            txt.innerText = pct + '%  (' + (ev.loaded/1024/1024).toFixed(1) + ' / ' + (ev.total/1024/1024).toFixed(1) + ' MB)';
+                        }}
                     }};
-                }})();
-                </script>
-                """
-                components.html(upload_html, height=200)
-            except Exception as e:
-                st.error(f"アップロード準備エラー: {e}")
+                    xhr.onload = () => {{
+                        if (xhr.status === 200) {{
+                            icon.innerText = '✅';
+                            label.innerText = 'アップロード完了！';
+                            hint.innerText = '画面を更新して「② 取り込む」へ進んでください。';
+                            hint.style.color = '#28a745';
+                            bar.style.background = 'linear-gradient(90deg,#28a745,#5cb85c)';
+                        }} else {{
+                            icon.innerText = '❌';
+                            label.innerText = 'エラー (HTTP ' + xhr.status + ')';
+                            hint.innerText = xhr.responseText || 'アップロードに失敗しました。';
+                            hint.style.color = '#dc3545';
+                        }}
+                    }};
+                    xhr.onerror = () => {{
+                        icon.innerText = '❌';
+                        label.innerText = 'ネットワークエラー';
+                        hint.style.color = '#dc3545';
+                    }};
+                    xhr.send(file);
+                }};
+            }})();
+            </script>
+            """
+            components.html(auto_upload_html, height=200)
+        except Exception as e:
+            st.error(f"アップロード準備エラー: {e}")
+        
+        if st.button("🔄 完了したら画面を更新"):
+            st.query_params.clear()
+            st.rerun()
     else:
-        st.markdown("""
-        <div style="border: 2px dashed #ccc; border-radius: 12px; padding: 30px; text-align: center; color: #aaa;">
-            <div style="font-size: 2.5rem; margin-bottom: 8px;">📂</div>
-            <div style="font-size: 0.95rem;">⬆️ まず保存ファイル名を入力してください</div>
+        # Phase 1: ファイルを選択 → ファイル名を取得してリロード
+        phase1_html = """
+        <div id="drop-zone" style="
+            font-family: 'Segoe UI', sans-serif;
+            border: 2px dashed #a0c4ff;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #f0f7ff 0%, #e8f0fe 100%);
+            padding: 36px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        " onmouseover="this.style.borderColor='#007bff'; this.style.background='linear-gradient(135deg, #e8f0fe 0%, #d0e2ff 100%)';"
+          onmouseout="this.style.borderColor='#a0c4ff'; this.style.background='linear-gradient(135deg, #f0f7ff 0%, #e8f0fe 100%)';">
+            <div style="font-size: 2.8rem; margin-bottom: 10px;">📂</div>
+            <div style="font-size: 1.05rem; font-weight: 600; color: #333; margin-bottom: 6px;">
+                ここにファイルをドラッグ＆ドロップ
+            </div>
+            <div style="font-size: 0.85rem; color: #888;">またはクリックしてファイルを選択（サイズ制限なし）</div>
+            <input type="file" id="file-pick" style="display:none;" autocomplete="off">
         </div>
-        """, unsafe_allow_html=True)
+        <script>
+        (function() {
+            const zone = document.getElementById('drop-zone');
+            const pick = document.getElementById('file-pick');
+            zone.addEventListener('click', () => pick.click());
+            zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.style.borderColor='#007bff'; });
+            zone.addEventListener('dragleave', () => { zone.style.borderColor='#a0c4ff'; });
+            zone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                zone.style.borderColor='#a0c4ff';
+                if (e.dataTransfer.files.length) { pick.files = e.dataTransfer.files; pick.dispatchEvent(new Event('change')); }
+            });
+            pick.onchange = () => {
+                const file = pick.files[0];
+                if (!file) return;
+                // ファイル名をクエリパラメータにセットしてStreamlitをリロード
+                const url = new URL(window.parent.location.href);
+                url.searchParams.set('upload_file', file.name);
+                window.parent.location.href = url.toString();
+            };
+        })();
+        </script>
+        """
+        components.html(phase1_html, height=200)
 
     st.divider()
 

@@ -291,7 +291,7 @@ with tab_upload:
                     if (xhr.status === 200) {{
                         icon.innerText = '✅';
                         label.innerText = '✅ ' + file.name + ' の送信完了！';
-                        hint.innerHTML = '<a href="?uploaded_blob={temp_blob_name}&real_name=' + encodeURIComponent(file.name) + '" target="_top" style="display:inline-block; margin-top:10px; padding:10px 24px; background:#28a745; color:white; text-decoration:none; border-radius:8px; font-weight:bold; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">🚀 データベースに登録する</a>';
+                        hint.innerHTML = '<a href="?uploaded_blob={temp_blob_name}&real_name=' + encodeURIComponent(file.name) + '" target="_top" onclick="event.stopPropagation();" style="display:inline-block; margin-top:10px; padding:10px 24px; background:#28a745; color:white; text-decoration:none; border-radius:8px; font-weight:bold; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">🚀 データベースに登録する</a>';
                         hint.style.color = '#28a745';
                         bar.style.background = 'linear-gradient(90deg,#28a745,#5cb85c)';
                     }} else {{

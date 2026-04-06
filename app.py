@@ -126,29 +126,40 @@ with tab_flexible:
 
         # 集計設定
         with st.expander("🛠️ 集計軸の設定", expanded=True):
+            st.info("💡 **タテ軸・ヨコ軸**には「アーティスト」や「曲名」などの分類項目を選び、**表示する値**には「売上金額」や「数量」などの数字項目を選んでください。")
             cc1, cc2, cc3 = st.columns(3)
-            row_axis = cc1.selectbox("タテ軸 (行)", attr_cols + (['SOURCE'] if 'SOURCE' in unified_df.columns else []), index=0)
-            col_list = ["(なし)"] + attr_cols + (['SOURCE'] if 'SOURCE' in unified_df.columns else [])
+            
+            # 軸の選択肢（数値以外を優先）
+            axis_options = attr_cols + (['SOURCE'] if 'SOURCE' in unified_df.columns else [])
+            row_axis = cc1.selectbox("タテ軸 (行)", axis_options, index=0 if axis_options else None)
+            
+            col_list = ["(なし)"] + axis_options
             col_axis = cc2.selectbox("ヨコ軸 (列)", col_list, index=0)
-            val_cols = cc3.multiselect("表示する値", num_cols, default=num_cols[:1] if num_cols else [])
+            
+            # 数値項目のデフォルト選択
+            val_cols = cc3.multiselect("表示する値 (集計対象)", num_cols, default=num_cols if num_cols else [])
 
         if not val_cols:
-            st.warning("表示する値（数値項目）を選択してください。")
+            st.warning("⚠️ **「表示する値」** を 1 つ以上選択してください（例：売上金額、数量）。")
         else:
             try:
                 # ピボットテーブルの生成
+                # もしユーザーが「数量」などを軸に選んでしまった場合（mappingsの設定ミス等）への考慮
                 p_cols = col_axis if col_axis != "(なし)" else None
-                pivot_res = flex_df.pivot_table(
-                    index=row_axis,
-                    columns=p_cols,
-                    values=val_cols,
-                    aggfunc='sum',
-                    margins=True,
-                    margins_name="合計"
-                )
                 
-                # スタイル調整（カンマ区切りなど）
-                st.dataframe(pivot_res, use_container_width=True)
+                with st.spinner("集計中..."):
+                    pivot_res = flex_df.pivot_table(
+                        index=row_axis,
+                        columns=p_cols,
+                        values=val_cols,
+                        aggfunc='sum',
+                        margins=True,
+                        margins_name="合計"
+                    )
+                    
+                    # 見栄えの調整: 数値をカンマ区切りに
+                    st.write(f"### 📋 集計結果: {row_axis} " + (f"× {col_axis}" if p_cols else ""))
+                    st.dataframe(pivot_res.style.format("{:,.0f}"), use_container_width=True)
                 
             except Exception as e:
                 st.error(f"集計エラー: {e}")

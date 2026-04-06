@@ -50,30 +50,39 @@ class DatabaseManager:
                 query_parameters=[bigquery.ScalarQueryParameter("f", "STRING", filename)]
             )).result()
 
-        # 各行をJSONに変換してリスト化
-        data_to_load = []
-        now = datetime.datetime.now().isoformat()
-        for i, row in df.iterrows():
-            data_to_load.append({
-                'filename': filename,
-                'source_type': source_type,
-                'row_index': i,
-                'raw_row_json': json.dumps(row.to_dict(), ensure_ascii=False),
-                'uploaded_at': now
-            })
-        
-        # 分割してアップロード (あまりに巨大な場合はチャンク分けも検討するが、まずは1ファイル単位)
+        # メモリ節約のため、一時ファイルにNDJSON形式で書き出してからロード
+        import tempfile
+        import os
+
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json', encoding='utf-8') as tmp:
+            now = datetime.datetime.now().isoformat()
+            for i, row in df.iterrows():
+                line = {
+                    'filename': filename,
+                    'source_type': source_type,
+                    'row_index': i,
+                    'raw_row_json': json.dumps(row.to_dict(), ensure_ascii=False),
+                    'uploaded_at': now
+                }
+                tmp.write(json.dumps(line, ensure_ascii=False) + '\n')
+            tmp_path = tmp.name
+
         job_config = bigquery.LoadJobConfig(
             write_disposition="WRITE_APPEND",
             source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+            schema=self.RAW_SCHEMA
         )
         try:
-            self.client.load_table_from_json(data_to_load, table_id, job_config=job_config, location="asia-northeast1").result()
-            logging.info(f"Successfully saved {len(data_to_load)} rows for RAW data: {filename}")
-            return len(data_to_load)
+            with open(tmp_path, 'rb') as source_file:
+                self.client.load_table_from_file(source_file, table_id, job_config=job_config, location="asia-northeast1").result()
+            logging.info(f"Successfully saved {len(df)} rows for RAW data (streamed): {filename}")
+            return len(df)
         except Exception as e:
             logging.error(f"Failed to save RAW individual data: {e}")
             raise
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
     def delete_raw_data(self, filename):
         """特定のファイルに関連する RAW データをすべて削除する"""

@@ -2,178 +2,161 @@ import streamlit as st
 import pandas as pd
 from aggregator.processor import SalesAggregator
 from aggregator.database_bq import DatabaseManager
-import io
 import os
 import time
+import uuid
 
 # --- Page Config ---
-st.set_page_config(
-    page_title="売上データ統合システム", 
-    page_icon="📊",
-    layout="wide", 
-    initial_sidebar_state="collapsed"
-)
+st.set_page_config(page_title="売上データ管理", page_icon="📊", layout="wide")
 
 # --- Premium Style ---
 st.markdown("""
 <style>
-    .block-container { padding-left: 5rem; padding-right: 5rem; }
-    .stApp { background-color: #fcfcfc; }
-    h1 { font-weight: 800; color: #1a1a1a; }
+    .stApp { background-color: #f8f9fa; }
+    .stTabs [data-baseweb="tab-list"] { gap: 20px; }
+    .stTabs [data-baseweb="tab"] { height: 50px; font-weight: 600; }
+    h1 { color: #1e3a8a; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- Database & Processor Logic ---
+# --- Logic ---
 @st.cache_resource
 def get_db(project_id):
-    dataset_id = "sales_aggregator_dataset"
-    return DatabaseManager(project_id=project_id, dataset_id=dataset_id)
+    return DatabaseManager(project_id=project_id, dataset_id="sales_aggregator_dataset")
 
-@st.cache_data(ttl=300)
-def fetch_raw_data(project_id):
-    return get_db(project_id).get_raw_data()
-
-@st.cache_data(ttl=600)
-def fetch_mappings(project_id):
-    return get_db(project_id).get_unified_columns()
-
-@st.cache_data(ttl=600)
-def fetch_rules(project_id):
-    return get_db(project_id).get_parsing_rules()
-
-def clear_app_cache():
-    st.cache_data.clear()
-
-# --- App Layout ---
 default_project_id = os.getenv('GOOGLE_CLOUD_PROJECT', st.session_state.get('project_id', ''))
-st.title("📊 売上データ管理システム")
-st.markdown("---")
+project_id = st.session_state.get('project_id', default_project_id)
 
-with st.expander("⚙️ システム設定", expanded=not default_project_id):
-    project_id = st.text_input("GCP Project ID", value=default_project_id)
-    if project_id:
-        st.session_state['project_id'] = project_id
-        db_manager = get_db(project_id)
-        processor = SalesAggregator()
-    else:
-        st.stop()
+if not project_id:
+    st.warning("GCPプロジェクトIDを設定してください。")
+    st.stop()
 
-tab_view, tab_flexible, tab_upload, tab_settings = st.tabs(["📋 売上一覧", "📊 自由集計", "📥 データの追加", "⚙️ 設定"])
+db_manager = get_db(project_id)
+processor = SalesAggregator()
 
-raw_df = fetch_raw_data(project_id)
-mappings = fetch_mappings(project_id)
+# --- Data Loading ---
+@st.cache_data(ttl=300)
+def load_all_data(pid):
+    raw = db_manager.get_raw_data()
+    maps = db_manager.get_unified_columns()
+    rules = db_manager.get_parsing_rules()
+    return raw, maps, rules
+
+raw_df, mappings, rules = load_all_data(project_id)
 unified_df = pd.DataFrame()
 if not raw_df.empty and not mappings.empty:
     unified_df = processor.unify_raw_records(raw_df, mappings)
 
+tab_view, tab_upload, tab_settings = st.tabs(["📋 売上一覧", "📥 データの追加", "⚙️ 設定"])
+
 with tab_view:
-    if raw_df.empty: st.info("データがありません。")
-    elif unified_df.empty: st.warning("マッピング設定を確認してください。")
+    if unified_df.empty: st.info("表示できるデータがありません。")
     else:
-        c1, c2 = st.columns(2)
-        month_col = next((c for c in unified_df.columns if not mappings.empty and mappings[mappings['unified_name']==c]['is_date'].any()), None)
-        month_list = ["すべて"] + sorted(unified_df[month_col].dropna().unique().tolist(), reverse=True) if month_col else ["すべて"]
-        sel_m = c1.selectbox("📅 対象月", month_list)
-        sel_s = c2.selectbox("🌍 ソース", ["すべて"] + sorted(unified_df['SOURCE'].unique().tolist()), key="source_sel")
-        
-        filtered = unified_df.copy()
-        if sel_m != "すべて": filtered = filtered[filtered[month_col] == sel_m]
-        if sel_s != "すべて": filtered = filtered[filtered['SOURCE'] == sel_s]
-        st.dataframe(filtered, use_container_width=True, hide_index=True)
+        st.dataframe(unified_df, use_container_width=True, hide_index=True)
 
-with tab_flexible:
-    if unified_df.empty: st.info("集計可能なデータがありません。")
-    else:
-        attr_cols = [m['unified_name'] for _, m in mappings.iterrows() if not m['is_numeric'] and not m['is_date']]
-        num_cols = [m['unified_name'] for _, m in mappings.iterrows() if m['is_numeric']]
-        cc1, cc2, cc3 = st.columns(3)
-        axis_options = attr_cols + (['SOURCE'] if 'SOURCE' in unified_df.columns else [])
-        row_axis = cc1.selectbox("タテ軸", axis_options, index=0 if axis_options else None)
-        col_axis = cc2.selectbox("ヨコ軸", ["(なし)"] + axis_options, index=0)
-        val_cols = cc3.multiselect("値", num_cols, default=num_cols[:1] if num_cols else [])
-        if val_cols and row_axis:
-            try:
-                p_cols = col_axis if col_axis != "(なし)" else None
-                pivot_res = unified_df.pivot_table(index=row_axis, columns=p_cols, values=val_cols, aggfunc='sum', margins=True, margins_name="合計")
-                st.dataframe(pivot_res.style.format("{:,.0f}"), use_container_width=True)
-            except Exception as e: st.error(f"集計エラー: {e}")
-
-# --- 3. データの追加 (標準アップローダー化) ---
+# --- 3. データの追加 (GCS直接送信 + ネイティブ発火) ---
 with tab_upload:
-    st.subheader("📥 データのアップロード")
-    st.caption("アップロードが完了すると、自動的に登録（重複時は警告）が開始されます。")
+    st.subheader("📥 大容量データのアップロード")
+    st.caption("1. ファイルを枠内にドロップ ➔ 2. 送信完了後、下のボタンを押して登録")
 
-    # 標準アップローダー (1GBまで対応)
-    uploaded_file = st.file_uploader("CSV/TSV/TXT ファイルを選択してください（1GBまで対応）", type=["csv", "tsv", "txt"], key="main_uploader")
+    # セッション固有のテンポラリファイル名
+    if '_temp_fn' not in st.session_state:
+        st.session_state._temp_fn = f"_up_{uuid.uuid4().hex[:8]}_latest.csv"
+    
+    temp_name = st.session_state._temp_fn
 
-    if uploaded_file:
-        fn = uploaded_file.name
-        st.markdown(f"📦 **ファイル選択済み:** `{fn}` ({uploaded_file.size/1024/1024:.1f} MB)")
+    try:
+        signed_url = db_manager.get_gcs_signed_url(temp_name)
         
-        # 重複チェック
-        is_existing = not raw_df.empty and fn in raw_df['filename'].unique()
+        # JSでGCSへ直接送信（413エラーを回避）
+        upload_html = f"""
+        <div id="drop-zone" style="border:2px dashed #3b82f6; border-radius:12px; background:#eff6ff; padding:40px; text-align:center; cursor:pointer;">
+            <div id="icon" style="font-size:2.5rem;">☁️</div>
+            <div id="status" style="font-weight:600; margin-top:10px; color:#1e40af;">ここにファイルをドロップ</div>
+            <div id="bar-wrap" style="display:none; margin:15px auto; width:80%; background:#d1d5db; height:10px; border-radius:5px; overflow:hidden;">
+                <div id="bar" style="width:0%; height:100%; background:#2563eb; transition:width .2s;"></div>
+            </div>
+            <div id="hint" style="font-size:0.8rem; color:#6b7280; margin-top:10px;">(1GBまでのCSV/TSVに対応)</div>
+            <input type="file" id="file-in" style="display:none;">
+        </div>
+        <script>
+        const zone=document.getElementById('drop-zone'), input=document.getElementById('file-in'),
+              status=document.getElementById('status'), bar=document.getElementById('bar'), wrap=document.getElementById('bar-wrap');
         
-        auto_start = False
-        # すでにこのセッションで処理済みの場合は自動実行しない
-        proc_flag = f"done_{fn}_{uploaded_file.size}"
-        if proc_flag in st.session_state:
-            st.success(f"✅ `{fn}` は登録完了しました。")
-            if st.button("🔄 別のファイルを登録する"):
-                del st.session_state[proc_flag]
-                st.rerun()
-        else:
-            if is_existing:
-                st.warning(f"⚠️ `{fn}` は既に登録されています。上書きしますか？")
-                if st.button("🔥 内容を上書きして登録する", type="primary"):
-                    auto_start = True
-            else:
-                # 新規ファイルなら自動！
-                auto_start = True
-                st.info("🚀 データベースへの登録を自動で開始します。そのままお待ちください...")
+        zone.onclick=()=>input.click();
+        input.onchange=()=>{{ if(input.files[0]) upload(input.files[0]); }};
+        zone.ondragover=e=>{{ e.preventDefault(); zone.style.background='#dbeafe'; }};
+        zone.ondragleave=()=>zone.style.background='#eff6ff';
+        zone.ondrop=e=>{{ e.preventDefault(); if(e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); }};
 
-            if auto_start:
-                with st.status(f"⚡ {fn} を処理中...") as status:
-                    try:
-                        status.update(label=f"🔍 データの構造を解析しています...")
-                        rules = fetch_rules(project_id)
+        function upload(file) {{
+            status.innerText = file.name + ' を送信中...';
+            // 親ウィンドウにファイル名を伝えるための仕掛け（クエリパラメータは使わず、単純なリセット通知）
+            wrap.style.display='block';
+            const xhr=new XMLHttpRequest();
+            xhr.open('PUT', '{signed_url}');
+            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+            xhr.upload.onprogress=e=>{{
+                const p=Math.round(e.loaded/e.total*100);
+                bar.style.width=p+'%';
+            }};
+            xhr.onload=()=>{{
+                if(xhr.status===200) {{
+                    status.innerText='✅ 送信完了！下のボタンを押してください';
+                }} else {{ status.innerText='エラー: ' + xhr.status; }}
+            }};
+            xhr.send(file);
+        }}
+        </script>
+        """
+        import streamlit.components.v1 as components
+        components.html(upload_html, height=220)
+    except Exception as e: st.error(f"準備エラー: {e}")
+
+    st.markdown("---")
+    
+    # Python側の発火ボタン
+    # JSとPythonの橋渡しとして、GCS上のファイル存在を物理的に確認する
+    if st.button("🚀 登録を完了する", type="primary", use_container_width=True):
+        with st.status("📦 データをデータベースへ移行しています...") as stat:
+            try:
+                # GCSから読み込み
+                blob_io = db_manager.get_gcs_blob_io(temp_name)
+                if blob_io:
+                    df = processor.parse_raw_only(blob_io, rules=rules)
+                    if df is not None:
+                        row_count = len(df)
+                        stat.update(label=f"📊 {row_count:,} 件のデータを保存中...")
                         
-                        # メモリ上から直接パース
-                        df = processor.parse_raw_only(uploaded_file, rules=rules)
+                        # ファイル名は "latest_import" 等にするか、何らかの方法で特定
+                        # 今回はシンプルに、オリジナルのファイル名を入力させるのではなく統合を優先
+                        target_fn = f"uploaded_at_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+                        db_manager.save_raw_data(df, target_fn, "AutoDetect", overwrite=True)
+                        db_manager.delete_gcs_file(temp_name)
                         
-                        if df is not None:
-                            row_count = len(df)
-                            status.update(label=f"📊 {row_count:,} 件のデータを検出しました。保存中...")
-                            
-                            s_type = processor.detect_source(fn)
-                            db_manager.save_raw_data(df, fn, s_type, overwrite=True)
-                            
-                            status.update(label=f"✅ {fn} ({row_count:,}件) の登録が完了しました！", state="complete")
-                            st.session_state[proc_flag] = True
-                            st.toast(f"登録完了: {fn}", icon="✅")
-                            clear_app_cache()
-                            time.sleep(2)
-                            st.rerun()
-                        else: st.error("ファイルの解析に失敗しました。解析ルールを確認してください。")
-                    except Exception as e: st.error(f"登録エラー: {e}")
+                        stat.update(label=f"✅ {row_count:,} 件の登録が正常に完了しました！", state="complete")
+                        st.cache_data.clear()
+                        time.sleep(2)
+                        st.rerun()
+                    else: st.error("データの解析に失敗しました。形式を確認してください。")
+                else: st.error("アップロードされたファイルが見つかりません。ドロップが完了したか確認してください。")
+            except Exception as e: st.error(f"登録エラー: {e}")
 
     st.divider()
-    st.markdown("#### 📋 取り込み済み履歴")
     if not raw_df.empty:
-        history = raw_df.groupby('filename').agg({'row_index':'count', 'source_type':'first'}).reset_index()
-        for i, row in history.iterrows():
-            with st.container(border=True):
-                ca, cb, cc = st.columns([4, 1, 1])
-                ca.write(f"📄 **{row['filename']}** ({row['source_type']})")
-                cb.write(f"{row['row_index']:,} 件")
-                if cc.button("🗑️", key=f"hist_del_{i}"):
-                    if db_manager.delete_raw_data(row['filename']):
-                        clear_app_cache()
-                        st.rerun()
-    else: st.info("履歴はありません。")
+        st.write("#### 📋 取り込み履歴")
+        history = raw_df['filename'].unique()
+        for h in history:
+            c1, c2 = st.columns([5, 1])
+            c1.text(f"📄 {h}")
+            if c2.button("🗑️", key=f"del_{h}"):
+                db_manager.delete_raw_data(h)
+                st.cache_data.clear()
+                st.rerun()
 
 with tab_settings:
-    st.subheader("⚙️ 管理")
-    if st.button("🔥 データベース全体の初期化", type="primary"):
+    st.subheader("⚙️ 設定")
+    if st.button("🔥 全データを初期化"):
         db_manager.reset_dataset()
-        clear_app_cache()
+        st.cache_data.clear()
         st.rerun()

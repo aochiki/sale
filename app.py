@@ -252,26 +252,74 @@ with tab_rules:
 with tab_mapping:
     st.subheader("🔗 項目マッピング設定")
     cur_mappings = db_manager.get_unified_columns()
+    
+    # 実際の列名リストを最新データから取得
+    orch_cols = db_manager.get_headers_by_pattern("Orchard%")
+    next_cols = db_manager.get_headers_by_pattern("DivSiteAll%")
+    itunes_cols = db_manager.get_headers_by_pattern("%_ZZ%")
+    
+    # 編集モードの管理
+    edit_data = st.session_state.get('edit_mapping', None)
+    
     with st.form("mapping_form", clear_on_submit=True):
-        u_name = st.text_input("共通項目名")
+        st.write("### 📝 マッピングの追加・編集")
+        u_name = st.text_input("共通項目名", value=edit_data['unified_name'] if edit_data else "")
         c1, c2, c3 = st.columns(3)
-        o_col = c1.text_input("Orchard 列名")
-        n_col = c2.text_input("NexTone 列名")
-        i_col = c3.text_input("iTunes 列名")
-        is_d = st.checkbox("日付項目として扱う")
-        is_n = st.checkbox("数値項目として扱う")
-        if st.form_submit_button("💾 保存"):
+        
+        # 初期値の特定 (selectbox用)
+        def get_idx(item_list, val):
+            try: return ([""] + item_list).index(val)
+            except: return 0
+
+        # Orchard
+        if orch_cols:
+            o_col = c1.selectbox("Orchard 列名", [""] + orch_cols, index=get_idx(orch_cols, edit_data['orchard_col']) if edit_data else 0)
+        else:
+            o_col = c1.text_input("Orchard 列名", value=edit_data['orchard_col'] if edit_data else "")
+            
+        # NexTone
+        if next_cols:
+            n_col = c2.selectbox("NexTone 列名", [""] + next_cols, index=get_idx(next_cols, edit_data['nextone_col']) if edit_data else 0)
+        else:
+            n_col = c2.text_input("NexTone 列名", value=edit_data['nextone_col'] if edit_data else "")
+            
+        # iTunes
+        if itunes_cols:
+            i_col = c3.selectbox("iTunes 列名", [""] + itunes_cols, index=get_idx(itunes_cols, edit_data['itunes_col']) if edit_data else 0)
+        else:
+            i_col = c3.text_input("iTunes 列名", value=edit_data['itunes_col'] if edit_data else "")
+            
+        is_d = st.checkbox("日付項目として扱う", value=edit_data['is_date'] if edit_data else False)
+        is_n = st.checkbox("数値項目として扱う", value=edit_data['is_numeric'] if edit_data else False)
+        
+        btn_label = "💾 更新して保存" if edit_data else "➕ 新規保存"
+        if st.form_submit_button(btn_label):
             if u_name:
                 db_manager.save_unified_column(u_name, o_col, n_col, i_col, is_d, is_n)
+                if 'edit_mapping' in st.session_state:
+                    del st.session_state.edit_mapping # 編集完了
                 st.cache_data.clear()
                 st.rerun()
 
+    if edit_data:
+        if st.button("❌ 編集をキャンセル"):
+            del st.session_state.edit_mapping
+            st.rerun()
+
+    st.divider()
     for i, m in cur_mappings.iterrows():
         with st.container(border=True):
-            col_t, col_b = st.columns([4, 1])
+            col_t, col_e, col_b = st.columns([4, 1, 1])
             col_t.write(f"📁 **{m['unified_name']}** (O: {m['orchard_col']}, N: {m['nextone_col']}, I: {m['itunes_col']})")
+            
+            if col_e.button("📝 編集", key=f"edit_map_{i}"):
+                st.session_state.edit_mapping = m.to_dict()
+                st.rerun()
+                
             if col_b.button("🗑️", key=f"del_map_{i}"):
                 db_manager.delete_unified_column(m['unified_name'])
+                if edit_data and edit_data['unified_name'] == m['unified_name']:
+                    del st.session_state.edit_mapping
                 st.cache_data.clear()
                 st.rerun()
 

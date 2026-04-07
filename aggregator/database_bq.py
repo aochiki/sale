@@ -169,6 +169,22 @@ class DatabaseManager:
             pass
         return []
 
+    def get_headers_by_pattern(self, pattern):
+        """特定のファイル名パターンに一致する最新のデータから列名を抽出する"""
+        table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
+        # 最新の1件からJSON内のキーを取得
+        query = f"SELECT raw_row_json FROM `{table_id}` WHERE filename LIKE @p ORDER BY uploaded_at DESC LIMIT 1"
+        try:
+            results = self.client.query(query, job_config=bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ScalarQueryParameter("p", "STRING", pattern)]
+            )).result()
+            for row in results:
+                data = json.loads(row.raw_row_json)
+                return sorted(list(data.keys()))
+        except Exception:
+            pass
+        return []
+
     def _ensure_table_exists(self, table_id, schema):
         """テーブルが存在しなければ作成する"""
         try:

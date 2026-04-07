@@ -2,5 +2,6 @@ streamlit
 pandas
 google-cloud-bigquery
 google-cloud-storage
+google-api-core
 db-dtypes
 pyarrow

@@ -1,10 +1,14 @@
 from google.cloud import bigquery
 from google.cloud import storage
 from google.cloud import exceptions
+from google.api_core import retry
 import pandas as pd
 import datetime
 import logging
 import json
+import time
+import os
+import tempfile
 
 class DatabaseManager:
     # RAW テーブルのスキーマ定義（一元管理）
@@ -102,12 +106,42 @@ class DatabaseManager:
             logging.error(f"Failed to delete raw data for {filename}: {e}")
             return False
 
-    def get_raw_data(self):
-        """保存されているすべての RAW データを取得する"""
+    def check_file_exists(self, filename):
+        """特定のファイル名が既に登録されているか確認する（前後スペースを無視）"""
+        if not filename:
+            return False
+        fn = filename.strip()
+        table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
+        query = f"SELECT count(*) as cnt FROM `{table_id}` WHERE filename = @f"
+        try:
+            results = self.client.query(query, job_config=bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ScalarQueryParameter("f", "STRING", fn)]
+            )).result()
+            for row in results:
+                return row.cnt > 0
+        except Exception as e:
+            logging.error(f"Duplicate check failed: {e}")
+            pass
+        return False
+
+    def get_file_history(self):
+        """アップロード済みのファイル一覧を全件取得する（軽量クエリ）"""
         table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
         try:
-            # 行順序を維持して取得
-            return self.client.query(f"SELECT * FROM `{table_id}` ORDER BY filename, row_index").to_dataframe()
+            query = f"SELECT filename, source_type, max(uploaded_at) as uploaded_at FROM `{table_id}` GROUP BY filename, source_type ORDER BY uploaded_at DESC"
+            return self.client.query(query).to_dataframe()
+        except exceptions.NotFound:
+            return pd.DataFrame()
+
+    def get_raw_data(self, limit=2000):
+        """保存されている RAW データを取得する（プレビュー用）"""
+        table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
+        try:
+            # 最新のアップロードを優先し、行順序を維持して取得
+            query = f"SELECT * FROM `{table_id}` ORDER BY uploaded_at DESC, filename, row_index"
+            if limit:
+                query += f" LIMIT {limit}"
+            return self.client.query(query).to_dataframe()
         except exceptions.NotFound:
             return pd.DataFrame()
 
@@ -213,6 +247,88 @@ class DatabaseManager:
             )).result()
         except exceptions.NotFound:
             pass
+
+    def upload_large_file_via_gcs(self, local_path, filename, source_type, overwrite=True, progress_callback=None):
+        """
+        GCSを経由して大容量ファイルをBigQueryにロードします。
+        """
+        def notify(msg):
+            if progress_callback:
+                progress_callback(msg)
+
+        table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
+        self._ensure_table_exists(table_id, self.RAW_SCHEMA)
+
+        if overwrite:
+            self.delete_raw_data(filename)
+
+        # 1. ローカルファイルをNDJSONに変換 (ストリーミング処理)
+        ndjson_path = os.path.join(tempfile.gettempdir(), f"{filename}.ndjson")
+        now = datetime.datetime.now().isoformat()
+        
+        notify(f"🔄 {filename} をNDJSON形式に変換中...")
+        try:
+            chunks = pd.read_csv(local_path, sep=None, engine='python', chunksize=10000, on_bad_lines='skip')
+            
+            with open(ndjson_path, 'w', encoding='utf-8') as f:
+                row_idx_offset = 0
+                for chunk in chunks:
+                    for i, row in chunk.iterrows():
+                        line = {
+                            'filename': filename,
+                            'source_type': source_type,
+                            'row_index': row_idx_offset + i,
+                            'raw_row_json': json.dumps(row.to_dict(), ensure_ascii=False),
+                            'uploaded_at': now
+                        }
+                        f.write(json.dumps(line, ensure_ascii=False) + '\n')
+                    row_idx_offset += len(chunk)
+                    notify(f"🔄 変換中: {row_idx_offset:,} 行を処理済み...")
+            
+            # 2. GCSへのレジュームアップロード
+            notify(f"☁️ GCSへアップロード中 (レジュームアップロード)...")
+            bucket = self.storage_client.bucket(self.bucket_name)
+            blob = bucket.blob(f"tmp_load/{filename}.ndjson")
+            blob.chunk_size = 10 * 1024 * 1024 
+            blob.upload_from_filename(ndjson_path, content_type='application/x-ndjson', timeout=600)
+
+            # 3. BigQueryへのロード (指数バックオフ付き)
+            notify(f"📊 BigQueryへロード中 (数分かかる場合があります)...")
+            gcs_uri = f"gs://{self.bucket_name}/{blob.name}"
+            job_config = bigquery.LoadJobConfig(
+                write_disposition="WRITE_APPEND",
+                source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+                schema=self.RAW_SCHEMA
+            )
+
+            # QuotaExceeded (403) などのリトライ設定
+            custom_retry = retry.Retry(
+                predicate=retry.if_exception_type(exceptions.Forbidden, exceptions.ServiceUnavailable, exceptions.InternalServerError),
+                initial=5.0,
+                maximum=60.0,
+                multiplier=2.0,
+                deadline=600.0
+            )
+
+            def run_load_job():
+                load_job = self.client.load_table_from_uri(
+                    gcs_uri, table_id, job_config=job_config, retry=custom_retry,
+                    location="asia-northeast1"
+                )
+                return load_job.result()
+
+            run_load_job()
+            notify(f"✅ {filename} のロードが完了しました。")
+
+        finally:
+            if os.path.exists(ndjson_path):
+                os.remove(ndjson_path)
+            try:
+                bucket.blob(f"tmp_load/{filename}.ndjson").delete()
+            except:
+                pass
+
+        return True
 
     # --- GCS Methods ---
     def get_gcs_signed_url(self, filename, content_type="application/octet-stream"):

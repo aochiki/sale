@@ -45,7 +45,7 @@ class DatabaseManager:
             self.client.delete_table(table.reference, not_found_ok=True)
         logging.info("Dataset reset complete.")
 
-    def save_raw_data(self, df, filename, source_type, overwrite=True):
+    def save_raw_data(self, df, filename, source_type, overwrite=True, progress_callback=None):
         """解析なしで、各行を個別のJSON行として RAW テーブルに保存する"""
         table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
         
@@ -57,10 +57,10 @@ class DatabaseManager:
                 query_parameters=[bigquery.ScalarQueryParameter("f", "STRING", filename)]
             )).result()
 
-        # メモリ節約のため、一時ファイルにNDJSON形式で書き出してからロード
         import tempfile
         import os
 
+        total_rows = len(df)
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json', encoding='utf-8') as tmp:
             now = datetime.datetime.now().isoformat()
             for i, row in df.iterrows():
@@ -72,7 +72,15 @@ class DatabaseManager:
                     'uploaded_at': now
                 }
                 tmp.write(json.dumps(line, ensure_ascii=False) + '\n')
+                
+                # 5000行ごとに進捗を表示
+                if progress_callback and (i + 1) % 5000 == 0:
+                    progress_callback(f"📊 変換中: {i+1:,} / {total_rows:,} 件を処理済み...")
+                    
             tmp_path = tmp.name
+
+        if progress_callback:
+            progress_callback(f"📦 クラウドへの最終転送を開始しています ({total_rows:,} 件)...")
 
         job_config = bigquery.LoadJobConfig(
             write_disposition="WRITE_APPEND",
@@ -414,3 +422,22 @@ class DatabaseManager:
         except Exception as e:
             logging.error(f"Failed to rename GCS file {old_name} -> {new_name}: {e}")
             return False
+    def get_file_history(self):
+        """取り込み済みファイルの一覧を、件数と最新日時付きで取得する"""
+        table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
+        query = f"""
+            SELECT 
+                filename, 
+                COUNT(*) as row_count, 
+                MAX(uploaded_at) as uploaded_at
+            FROM `{table_id}`
+            GROUP BY filename
+            ORDER BY uploaded_at DESC
+        """
+        try:
+            return self.client.query(query).to_dataframe()
+        except exceptions.NotFound:
+            return pd.DataFrame()
+        except Exception as e:
+            logging.error(f"Failed to fetch file history: {e}")
+            return pd.DataFrame()

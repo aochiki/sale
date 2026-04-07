@@ -6,7 +6,7 @@ __pycache__
 *.db-shm
 *.db-wal
 *.sqlite
-.streamlit
+# .streamlit を除外から外す（config.tomlを反映させるため）
 .gemini
 tests
 tmp

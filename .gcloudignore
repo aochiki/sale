@@ -1,20 +1,12 @@
 # .gcloudignore
-# 不要なファイルやシステムファイルを除外する
-*
-!Dockerfile
-!app.py
-!requirements.txt
-!aggregator/
-!aggregator/*.py
-
-# Windows システムファイルを除外
+.git/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.gemini/
+.env
 NTUSER.DAT*
 ntuser.dat*
 *.log
 *.tmp
-.git/
-.gitignore
-__pycache__/
-*.pyc
-venv/
-.env

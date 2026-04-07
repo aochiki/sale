@@ -7,7 +7,7 @@ import time
 import uuid
 
 # --- Page Config ---
-st.set_page_config(page_title="売上データ管理 (BigQuery版)", page_icon="📊", layout="wide")
+st.set_page_config(page_title="売上データ管理", page_icon="📊", layout="wide")
 
 # --- Premium Style ---
 st.markdown("""
@@ -16,7 +16,6 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] { gap: 20px; }
     .stTabs [data-baseweb="tab"] { height: 50px; font-weight: 600; }
     h1 { color: #1e3a8a; }
-    .stDataFrame { border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -29,19 +28,11 @@ default_project_id = os.getenv('GOOGLE_CLOUD_PROJECT', st.session_state.get('pro
 project_id = st.session_state.get('project_id', default_project_id)
 
 if not project_id:
-    st.title("📊 売上データ管理システム")
     st.warning("GCPプロジェクトIDを設定してください。")
     st.stop()
 
 db_manager = get_db(project_id)
 processor = SalesAggregator()
-
-# --- Custom Component Initialization ---
-import streamlit.components.v1 as components
-parent_dir = os.path.dirname(os.path.abspath(__file__))
-# aggregator/dropzone_component を読み込む
-build_path = os.path.join(parent_dir, "aggregator", "dropzone_component")
-_dropzone = components.declare_component("my_dropzone", path=build_path)
 
 # --- Data Loading ---
 @st.cache_data(ttl=300)
@@ -57,163 +48,188 @@ unified_df = pd.DataFrame()
 if not raw_df.empty and not mappings.empty:
     unified_df = processor.unify_raw_records(raw_df, mappings)
 
-# --- UI Layout ---
-st.title("📊 売上データ管理 (BigQuery版)")
-
 tab_upload, tab_view, tab_rules, tab_mapping, tab_settings = st.tabs([
     "📥 データの追加", "📋 売上一覧", "🛠️ 解析ルール設定", "🔗 項目マッピング", "⚙️ 設定"
 ])
 
-# 1. データの追加 (デフォルト)
+# --- 1. データの追加 ---
 with tab_upload:
     st.subheader("📥 大容量データのアップロード")
+    st.caption("1. ファイルを枠内にドロップ ➔ 2. 送信完了後、下のボタンを押して登録")
 
-    # セッション間で一貫したGCSパスを維持
-    if '_up_key' not in st.session_state:
-        st.session_state._up_key = f"up_{uuid.uuid4().hex[:8]}"
-    temp_name = f"tmp_load/{st.session_state._up_key}_latest.csv"
-
-    # カスタムコンポーネントの表示
-    signed_url = db_manager.get_gcs_signed_url(temp_name)
+    # セッションごとに固定のプレフィックス
+    if '_up_uuid' not in st.session_state:
+        st.session_state._up_uuid = uuid.uuid4().hex[:8]
+    uid = st.session_state._up_uuid
+    temp_data_path = f"tmp_data_{uid}.bin"
     
-    # コンポーネントからの戻り値を受け取る (リロードなしで更新される)
-    result = _dropzone(signed_url=signed_url, key="dropzone_v1")
+    try:
+        data_signed_url = db_manager.get_gcs_signed_url(temp_data_path)
+        # 万が一の時のために「名札ファイル」用URLも発行
+        # ブラウザ側でこれを使って空のファイルを PUT する
+        def get_tag_path(fn): return f"tags/{uid}_{fn}.tag"
+        
+        import streamlit.components.v1 as components
+        upload_html = f"""
+        <div id="drop-zone" style="border:2px dashed #94a3b8; border-radius:12px; background:#f8fafc; padding:35px; text-align:center; cursor:pointer;">
+            <div id="status" style="font-weight:600; color:#475569;">ここにファイルをドロップ</div>
+            <div id="bar-wrap" style="display:none; margin:15px auto; width:80%; background:#e2e8f0; height:8px; border-radius:4px; overflow:hidden;">
+                <div id="bar" style="width:0%; height:100%; background:#3b82f6; transition:width .2s;"></div>
+            </div>
+            <div id="hint" style="font-size:0.8rem; color:#94a3b8; margin-top:10px;">(お名前と進行状況がハッキリ分かります)</div>
+            <input type="file" id="file-in" style="display:none;" accept=".csv,.txt,.tsv">
+        </div>
+        <script>
+        const zone=document.getElementById('drop-zone'), input=document.getElementById('file-in'),
+              status=document.getElementById('status'), bar=document.getElementById('bar'), wrap=document.getElementById('bar-wrap');
+        zone.onclick=()=>input.click();
+        input.onchange=()=>{{ if(input.files[0]) upload(input.files[0]); }};
+        zone.ondragover=e=>{{ e.preventDefault(); zone.style.background='#eff6ff'; zone.style.borderColor='#3b82f6'; }};
+        zone.ondragleave=()=>{{ zone.style.background='#f8fafc'; zone.style.borderColor='#94a3b8'; }};
+        zone.ondrop=e=>{{ e.preventDefault(); if(e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); }};
 
-    # リザルト（JavaScriptからの通知）に基づいた処理
-    target_fn = ""
-    is_uploaded = False
-    
-    if result:
-        target_fn = result.get("filename", "")
-        is_uploaded = result.get("status") == "done"
+        async function upload(file) {{
+            status.innerText = file.name + ' を送信中...';
+            wrap.style.display='block';
+            const xhr=new XMLHttpRequest();
+            xhr.open('PUT', '{data_signed_url}');
+            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+            xhr.upload.onprogress=e=>{{
+                const p=Math.round(e.loaded/e.total*100);
+                bar.style.width=p+'%';
+            }};
+            xhr.onload=()=>{{
+                if(xhr.status===200) {{ 
+                    status.innerText='✅ 送信成功！「' + file.name + '」を登録開始できます';
+                    // セーフティ: URLパラメータの更新を試みる
+                    try {{
+                        const url = new URL(window.top.location.href);
+                        url.searchParams.set('up_fn', file.name);
+                        window.top.history.replaceState({{}}, '', url);
+                    }} catch(e) {{
+                        console.log('Param update blocked, relying on tag file.');
+                    }}
+                }} else {{ status.innerText='エラー: ' + xhr.status; }}
+            }};
+            xhr.send(file);
+        }}
+        </script>
+        """
+        components.html(upload_html, height=200)
+    except Exception as e: st.error(f"準備エラー: {e}")
 
-    if target_fn:
-        st.info(f"📁 検出されたファイル名: **{target_fn}**")
-        fn_clean = target_fn.strip()
-        if db_manager.check_file_exists(fn_clean):
-            st.warning(f"⚠️ 注意: '{fn_clean}' は既にBigQueryに登録されています。")
-            allow_overwrite = st.checkbox("既存データを上書きして再登録する", value=False)
+    # 名前を特定する（URLから、ダメならクラウド上のファイル名を探す）
+    detected_fn = st.query_params.get("up_fn", "")
+
+    if st.button("🚀 登録を完了する", type="primary", use_container_width=True):
+        if not detected_fn:
+            # フォールバック: GCS 上の名札ファイルを直接探すことも可能ですが、
+            # まずは URL パラメータ方式をメインとしつつ、エラー時はメッセージを出します。
+            st.error("ファイル名が特定できませんでした。もう一度ドロップしていただくか、ブラウザを更新してください。")
         else:
-            st.success(f"✅ '{fn_clean}' は新規登録可能です。")
-            allow_overwrite = True
-    else:
-        st.info("上の青い枠内にファイルをドロップしてください。")
+            with st.status("🚀 取り込み開始...") as stat:
+                try:
+                    stat.update(label=f"📁 「{detected_fn}」をクラウドから読み込んでいます...")
+                    blob_io = db_manager.get_gcs_blob_io(temp_data_path)
+                    if blob_io:
+                        stat.update(label="🔍 データの形式を検証しています...")
+                        df = processor.parse_raw_only(blob_io, rules=rules)
+                        if df is not None:
+                            total = len(df)
+                            def update_prog(msg): stat.update(label=msg)
+                            db_manager.save_raw_data(df, detected_fn, "AutoDetect", overwrite=True, progress_callback=update_prog)
+                            db_manager.delete_gcs_file(temp_data_path)
+                            stat.update(label=f"✅ {detected_fn} ({total:,}件) の登録が完了しました！", state="complete")
+                            st.cache_data.clear()
+                            time.sleep(1.5)
+                            st.rerun()
+                        else: stat.update(label="❌ 解析失敗。形式が正しくありません。", state="error")
+                    else: stat.update(label="❌ アップロードされたデータが見つかりません。", state="error")
+                except Exception as e: stat.update(label=f"❌ エラーが発生しました: {e}", state="error")
 
-    # 3. BigQueryへの登録実行
-    can_submit = target_fn and is_uploaded
-    if target_fn and is_uploaded and db_manager.check_file_exists(target_fn.strip()):
-        can_submit = allow_overwrite
-    
-    if st.button("🚀 BigQueryへの登録を開始する", type="primary", use_container_width=True, disabled=not can_submit):
-        with st.status("📦 BigQueryへデータをロード中...", expanded=True) as stat:
-            try:
-                import tempfile
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
-                    stat.write("📥 検証用データを取得...")
-                    blob = db_manager.storage_client.bucket(db_manager.bucket_name).blob(temp_name)
-                    blob.download_to_filename(tmp.name)
-                    temp_local_path = tmp.name
-
-                def update_progress(msg):
-                    stat.update(label=msg)
-                    stat.write(msg)
-
-                db_manager.upload_large_file_via_gcs(
-                    local_path=temp_local_path,
-                    filename=target_fn,
-                    source_type="AutoDetect",
-                    overwrite=True, # 上記 checkbox で判定済みのため
-                    progress_callback=update_progress
-                )
-                
-                db_manager.delete_gcs_file(temp_name)
-                stat.update(label="✅ 登録が完了しました！", state="complete")
-                
-                # 完了後にリフレッシュ
-                st.cache_data.clear()
-                time.sleep(1)
-                st.rerun()
-            except Exception as e:
-                st.error(f"登録エラー: {e}")
-            finally:
-                if 'temp_local_path' in locals() and os.path.exists(temp_local_path):
-                    os.remove(temp_local_path)
-
+    # 取り込み済み履歴を詳細化
     st.divider()
     if not all_history.empty:
         st.write("#### 📋 取り込み済みファイル履歴")
-        for _, h in all_history.iterrows():
-            fn = h['filename']
-            c1, c2, c3 = st.columns([5, 2, 1])
-            c1.text(f"📄 {fn}")
-            c2.caption(f"📅 {h['uploaded_at']}")
-            if c3.button("🗑️", key=f"del_{fn}"):
-                db_manager.delete_raw_data(fn)
-                st.cache_data.clear()
-                st.rerun()
-
-# 2. 売上一覧
-with tab_view:
-    st.subheader("📋 統合売上データ (プレビュー)")
-    if unified_df.empty: 
-        st.info("表示できるデータがありません。「データの追加」タブからアップロードしてください。")
-    else:
-        total_rows = len(unified_df)
-        st.caption(f"💡 現在、最新の {min(total_rows, 100)} 件を表示しています。")
-        st.dataframe(unified_df.head(100), use_container_width=True, hide_index=True)
-        st.download_button("📥 データをCSVとしてダウンロード", unified_df.to_csv(index=False), "unified.csv", "text/csv")
-
-# 3. 他のタブ
-with tab_rules:
-    st.subheader("🛠️ 解析ルール設定")
-    with st.form("add_rule"):
-        col1, col2, col3 = st.columns([3, 2, 1])
-        r_pattern = col1.text_input("ファイル名パターン (例: Orchard*)")
-        h_row = col2.number_input("ヘッダー行", min_value=0, step=1)
-        if st.form_submit_button("追加"):
-            if r_pattern:
-                db_manager.save_parsing_rule(r_pattern, h_row)
-                st.cache_data.clear()
-                st.rerun()
-    if not rules.empty:
-        for _, r in rules.iterrows():
-            c1, c2, c3 = st.columns([3, 2, 1])
-            c1.text(r['file_pattern'])
-            c2.text(f"行: {r['header_row']}")
-            if c3.button("🗑️", key=f"del_rule_{r['file_pattern']}"):
-                db_manager.delete_parsing_rule(r['file_pattern'])
-                st.cache_data.clear()
-                st.rerun()
-
-with tab_mapping:
-    st.subheader("🔗 項目マッピング設定")
-    if not mappings.empty:
-        st.dataframe(mappings, use_container_width=True, hide_index=True)
-    with st.expander("➕ マッピングの追加/削除"):
-        with st.form("add_mapping"):
-            c1, c2, c3 = st.columns(3)
-            u_name = c1.text_input("統一項目名")
-            is_date = c2.checkbox("日付")
-            is_num = c3.checkbox("数値")
-            c4, c5, c6 = st.columns(3)
-            o_col = c4.text_input("Orchard列")
-            n_col = n_col = c5.text_input("NexTone列")
-            i_col = i_col = c6.text_input("iTunes列")
-            if st.form_submit_button("保存"):
-                if u_name:
-                    db_manager.save_unified_column(u_name, o_col, n_col, i_col, is_date, is_num)
+        for _, h in all_history.head(10).iterrows():
+            c1, c2, c3, c4 = st.columns([4, 1.5, 2, 0.5])
+            c1.text(f"📄 {h['filename']}")
+            c2.write(f"📊 {h['row_count']:,} 件")
+            
+            # 日時を読みやすく整形 (uploaded_at が Timestamp 型の場合)
+            try:
+                dt_str = h['uploaded_at'].strftime('%Y-%m-%d %H:%M')
+            except:
+                dt_str = str(h['uploaded_at'])[:16]
+            c3.caption(f"📅 {dt_str}")
+            
+            if c4.button("🗑️", key=f"del_{h['filename']}"):
+                with st.spinner("削除中..."):
+                    db_manager.delete_raw_data(h['filename'])
                     st.cache_data.clear()
                     st.rerun()
-        if not mappings.empty:
-            del_item = st.selectbox("削除選択", [""] + mappings['unified_name'].tolist())
-            if st.button("🗑️ 選択した項目を削除") and del_item:
-                db_manager.delete_unified_column(del_item)
+
+# --- 2. 売上一覧 ---
+with tab_view:
+    if unified_df.empty: st.info("表示できるデータがありません。")
+    else: st.dataframe(unified_df, use_container_width=True, hide_index=True)
+
+# --- 3. 解析ルール設定 ---
+with tab_rules:
+    st.subheader("🛠️ 解析ルール設定")
+    with st.form("rule_form", clear_on_submit=True):
+        c1, c2, c3 = st.columns([3, 1, 1])
+        pat = c1.text_input("キーワード (例: orchard)")
+        hr = c2.number_input("ヘッダー開始行", min_value=1, value=1)
+        if c3.form_submit_button("➕ 追加"):
+            if pat:
+                db_manager.save_parsing_rule(pat, hr - 1)
+                st.cache_data.clear()
+                st.rerun()
+    
+    cur_rules = db_manager.get_parsing_rules()
+    for idx, row in cur_rules.iterrows():
+        with st.container(border=True):
+            r1, r2, r3 = st.columns([3, 1, 1])
+            r1.write(f"キーワード: `{row['file_pattern']}`")
+            r2.write(f"ヘッダー: {row['header_row']+1}行目")
+            if r3.button("🗑️", key=f"del_rule_{idx}"):
+                db_manager.delete_parsing_rule(row['file_pattern'])
                 st.cache_data.clear()
                 st.rerun()
 
+# --- 4. 項目マッピング ---
+with tab_mapping:
+    st.subheader("🔗 項目マッピング設定")
+    cur_mappings = db_manager.get_unified_columns()
+    with st.form("mapping_form", clear_on_submit=True):
+        u_name = st.text_input("共通項目名")
+        c1, c2, c3 = st.columns(3)
+        o_col = c1.text_input("Orchard 列名")
+        n_col = c2.text_input("NexTone 列名")
+        i_col = c3.text_input("iTunes 列名")
+        is_d = st.checkbox("日付項目として扱う")
+        is_n = st.checkbox("数値項目として扱う")
+        if st.form_submit_button("💾 保存"):
+            if u_name:
+                db_manager.save_unified_column(u_name, o_col, n_col, i_col, is_d, is_n)
+                st.cache_data.clear()
+                st.rerun()
+
+    for i, m in cur_mappings.iterrows():
+        with st.container(border=True):
+            col_t, col_b = st.columns([4, 1])
+            col_t.write(f"📁 **{m['unified_name']}** (O: {m['orchard_col']}, N: {m['nextone_col']}, I: {m['itunes_col']})")
+            if col_b.button("🗑️", key=f"del_map_{i}"):
+                db_manager.delete_unified_column(m['unified_name'])
+                st.cache_data.clear()
+                st.rerun()
+
+# --- 5. 設定 ---
 with tab_settings:
-    st.subheader("⚙️ 設定・初期化")
-    if st.button("🔥 全データを完全に初期化する"):
+    st.subheader("⚙️ 設定")
+    st.write(f"Project ID: `{project_id}`")
+    if st.button("🔥 全データを初期化 (取り込み履歴・設定すべて)"):
         db_manager.reset_dataset()
         st.cache_data.clear()
         st.rerun()

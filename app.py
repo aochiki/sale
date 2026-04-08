@@ -10,10 +10,11 @@ import logging
 import os
 import json
 import time
+import uuid
 
 # --- Page Config ---
 st.set_page_config(
-    page_title="売上データ統合システム (RAW Dynamic)", 
+    page_title="売上データ統合システム (AI & Auto-Upload)", 
     page_icon="📊",
     layout="wide", 
     initial_sidebar_state="collapsed"
@@ -48,17 +49,13 @@ def fetch_mappings(project_id):
 def fetch_rules(project_id):
     return get_db(project_id).get_parsing_rules()
 
-@st.cache_data(ttl=600)
-def fetch_headers(project_id, source_type):
-    return get_db(project_id).get_unique_headers(source_type)
-
 def clear_app_cache():
     st.cache_data.clear()
 
 # --- App Layout ---
 default_project_id = os.getenv('GOOGLE_CLOUD_PROJECT', st.session_state.get('project_id', ''))
 st.title("📊 売上データ管理システム")
-st.caption("RAWデータ保存 & 表示時動的統合モデル")
+st.caption("Auto-Detect Upload & AI Aggregation")
 st.markdown("---")
 
 with st.expander("⚙️ システム設定", expanded=not default_project_id):
@@ -70,518 +67,309 @@ with st.expander("⚙️ システム設定", expanded=not default_project_id):
     else:
         st.stop()
 
-tab_view, tab_flexible, tab_ai, tab_upload, tab_settings = st.tabs(["📋 売上データ閲覧", "📊 自由集計", "🤖 AI集計", "📥 RAWデータ追加", "⚙️ システム管理"])
+tab_view, tab_flexible, tab_ai, tab_upload, tab_settings = st.tabs([
+    "📋 売上データ閲覧", "📊 自由集計", "🤖 AI集計", "📥 RAWデータ追加", "⚙️ システム管理"
+])
 
 # --- 共通データの取得 ---
 raw_df = fetch_raw_data(project_id)
 mappings = fetch_mappings(project_id)
+rules = fetch_rules(project_id)
 unified_df = pd.DataFrame()
+
 if not raw_df.empty and not mappings.empty:
     with st.status("🔄 データを動的に統合中...", expanded=False):
         unified_df = processor.unify_raw_records(raw_df, mappings)
 
-# --- 1. 閲覧タブ (動的統合) ---
+# --- 1. 閲覧タブ ---
 with tab_view:
     if raw_df.empty:
         st.info("データがありません。RAWデータをアップロードしてください。")
     elif unified_df.empty:
         st.warning("マッピング設定に基づいて統合されたデータがありません。設定を確認してください。")
     else:
-        # フィルタリング
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            month_col = next((c for c in unified_df.columns if not mappings.empty and mappings[mappings['unified_name']==c]['is_date'].any()), None)
-            month_list = ["すべて"] + sorted(unified_df[month_col].dropna().unique().tolist(), reverse=True) if month_col else ["すべて"]
-            sel_m = st.selectbox("📅 対象月", month_list)
-        with c2:
-            sel_s = st.selectbox("🌍 ソース", ["すべて"] + sorted(unified_df['SOURCE'].unique().tolist()))
+        # 簡易フィルタ
+        c1, c2 = st.columns(2)
+        month_col = next((c for c in unified_df.columns if not mappings.empty and mappings[mappings['unified_name']==c]['is_date'].any()), None)
+        month_list = ["すべて"] + sorted(unified_df[month_col].dropna().unique().tolist(), reverse=True) if month_col else ["すべて"]
+        sel_m = c1.selectbox("📅 対象月", month_list)
+        sel_s = c2.selectbox("🌍 ソース", ["すべて"] + sorted(unified_df['SOURCE'].unique().tolist()))
         
         filtered = unified_df.copy()
         if sel_m != "すべて": filtered = filtered[filtered[month_col] == sel_m]
         if sel_s != "すべて": filtered = filtered[filtered['SOURCE'] == sel_s]
         
         st.dataframe(filtered, use_container_width=True, hide_index=True)
+        st.download_button("📥 データをCSVとしてダウンロード", filtered.to_csv(index=False), f"unified_{datetime.datetime.now().strftime('%Y%m%d')}.csv", "text/csv")
 
-# --- 2. 自由集計タブ (ピボット) ---
+# --- 2. 自由集計タブ ---
 with tab_flexible:
     if unified_df.empty:
         st.info("集計可能なデータがありません。")
     else:
-        st.subheader("📊 ダイナミック・ピボットレポート")
-        
-        # 属性項目と数値項目の抽出
+        st.subheader("📊 ピボットテーブル集計")
         attr_cols = [m['unified_name'] for _, m in mappings.iterrows() if not m['is_numeric'] and not m['is_date']]
         num_cols = [m['unified_name'] for _, m in mappings.iterrows() if m['is_numeric']]
-        date_col = next((m['unified_name'] for _, m in mappings.iterrows() if m['is_date']), None)
         
-        # 期間フィルター
-        if date_col:
-            months = sorted(unified_df[date_col].dropna().unique().tolist())
-            c1, c2 = st.columns(2)
-            start_m = c1.selectbox("🚩 開始月", months, index=0)
-            end_m = c2.selectbox("🏁 終了月", months, index=len(months)-1)
-            
-            # フィルタ適用
-            flex_df = unified_df[(unified_df[date_col] >= start_m) & (unified_df[date_col] <= end_m)].copy()
-        else:
-            flex_df = unified_df.copy()
-            st.warning("日付項目が定義されていないため、期間絞り込みはスキップされました。")
-
-        # 集計設定
-        with st.expander("🛠️ 集計軸の設定", expanded=True):
-            st.info("💡 **タテ軸・ヨコ軸**には「アーティスト」や「曲名」などの分類項目を選び、**表示する値**には「売上金額」や「数量」などの数字項目を選んでください。")
-            cc1, cc2, cc3 = st.columns(3)
-            
-            # 軸の選択肢（数値以外を優先）
-            axis_options = attr_cols + (['SOURCE'] if 'SOURCE' in unified_df.columns else [])
-            row_axis = cc1.selectbox("タテ軸 (行)", axis_options, index=0 if axis_options else None)
-            
-            col_list = ["(なし)"] + axis_options
-            col_axis = cc2.selectbox("ヨコ軸 (列)", col_list, index=0)
-            
-            # 数値項目のデフォルト選択
-            val_cols = cc3.multiselect("表示する値 (集計対象)", num_cols, default=num_cols if num_cols else [])
-
-        if not val_cols:
-            st.warning("⚠️ **「表示する値」** を 1 つ以上選択してください（例：売上金額、数量）。")
-        else:
+        c1, c2, c3 = st.columns(3)
+        row_axis = c1.selectbox("縦軸 (行)", [None] + attr_cols + ['SOURCE'])
+        col_axis = c2.selectbox("横軸 (列)", [None] + attr_cols + ['SOURCE'])
+        val_axis = c3.selectbox("集計値", num_cols if num_cols else [None])
+        
+        if val_axis:
             try:
-                # ピボットテーブルの生成
-                # もしユーザーが「数量」などを軸に選んでしまった場合（mappingsの設定ミス等）への考慮
-                p_cols = col_axis if col_axis != "(なし)" else None
-                
-                with st.spinner("集計中..."):
-                    pivot_res = flex_df.pivot_table(
-                        index=row_axis,
-                        columns=p_cols,
-                        values=val_cols,
-                        aggfunc='sum',
-                        margins=True,
-                        margins_name="合計"
-                    )
-                    
-                    # 見栄えの調整: 数値をカンマ区切りに
-                    st.write(f"### 📋 集計結果: {row_axis} " + (f"× {col_axis}" if p_cols else ""))
-                    st.dataframe(pivot_res.style.format("{:,.0f}"), use_container_width=True)
-                
-            except Exception as e:
-                st.error(f"集計エラー: {e}")
-                st.info("選択した項目の組み合わせで集計できませんでした。軸を変更してみてください。")
+                pivot_df = unified_df.pivot_table(
+                    index=row_axis, columns=col_axis, values=val_axis,
+                    aggfunc='sum', margins=True, margins_name="合計"
+                )
+                st.dataframe(pivot_df.style.format("{:,.0f}"), use_container_width=True)
+            except:
+                st.info("選択した項目の組み合わせで集計できませんでした。")
 
-
-# --- 2.5 AI集計タブ (Gemini API) ---
+# --- 3. AI集計タブ ---
 with tab_ai:
     if unified_df.empty:
         st.info("集計可能なデータがありません。")
     else:
         st.subheader("🤖 自然言語によるAI集計")
-        st.caption("「かりゆし58の曲ごとの売上を表示」「AWAの2024年3月のアーティスト別売上」のように入力してください。")
+        st.caption("「かりゆし58の曲ごとの売上を表示」など、入力してください。")
         
-        # 属性・数値・日付項目の準備
-        attr_cols = [m['unified_name'] for _, m in mappings.iterrows() if not m['is_numeric'] and not m['is_date']]
-        num_cols = [m['unified_name'] for _, m in mappings.iterrows() if m['is_numeric']]
         date_col = next((m['unified_name'] for _, m in mappings.iterrows() if m['is_date']), None)
-        
-        # 先に期間でザックリ絞れるようにしておく（安定性向上のため）
         flex_df_ai = unified_df.copy()
         if date_col:
             months = sorted(flex_df_ai[date_col].dropna().unique().tolist())
             c1, c2 = st.columns(2)
-            start_m_ai = c1.selectbox("🚩 開始月 (AI)", months, index=0, key="ai_start")
-            end_m_ai = c2.selectbox("🏁 終了月 (AI)", months, index=len(months)-1, key="ai_end")
+            start_m_ai = c1.selectbox("🚩 開始月", months, index=0, key="ai_start")
+            end_m_ai = c2.selectbox("🏁 終了月", months, index=len(months)-1, key="ai_end")
             flex_df_ai = flex_df_ai[(flex_df_ai[date_col] >= start_m_ai) & (flex_df_ai[date_col] <= end_m_ai)].copy()
 
         user_query = st.chat_input("AIに集計をお願いする...")
         if user_query:
             st.chat_message("user").write(user_query)
-            
             with st.chat_message("assistant"):
                 with st.spinner("AIが意図を解析中..."):
-                    all_cols = attr_cols + (['SOURCE'] if 'SOURCE' in unified_df.columns else [])
+                    attr_cols_ai = [m['unified_name'] for _, m in mappings.iterrows() if not m['is_numeric'] and not m['is_date']]
+                    num_cols_ai = [m['unified_name'] for _, m in mappings.iterrows() if m['is_numeric']]
+                    all_cols = attr_cols_ai + (['SOURCE'] if 'SOURCE' in unified_df.columns else [])
+                    parsed = parse_natural_language_query(project_id, user_query, all_cols, num_cols_ai)
                     
-                    # Vertex AI を呼び出して解析
-                    parsed_params = parse_natural_language_query(project_id, user_query, all_cols, num_cols)
-                    
-                    if parsed_params:
-                        # 抽出されたパラメータを表示
-                        with st.expander("🔍 AIの解析結果（JSON）", expanded=False):
-                            st.json(parsed_params)
-                        
+                    if parsed:
+                        with st.expander("🔍 AIの解析結果"): st.json(parsed)
                         try:
-                            # フィルタの適用
-                            filters = parsed_params.get("filters", {})
-                            for col, val in filters.items():
-                                if col in flex_df_ai.columns and val:
-                                    flex_df_ai = flex_df_ai[flex_df_ai[col].astype(str).str.contains(str(val), na=False, case=False)]
+                            f_df = flex_df_ai.copy()
+                            for col, val in parsed.get("filters", {}).items():
+                                if col in f_df.columns:
+                                    f_df = f_df[f_df[col].astype(str).str.contains(str(val), na=False, case=False)]
                             
-                            row_axis = parsed_params.get("row_axis")
-                            col_axis = parsed_params.get("col_axis")
-                            val_axes = parsed_params.get("value_axis", [])
+                            r = parsed.get("row_axis"); c = parsed.get("col_axis"); vs = parsed.get("value_axis", [])
+                            if not vs and num_cols_ai: vs = [num_cols_ai[0]]
                             
-                            # バリデーション
-                            if row_axis not in flex_df_ai.columns: row_axis = None
-                            if col_axis not in flex_df_ai.columns: col_axis = None
-                            val_axes = [v for v in val_axes if v in flex_df_ai.columns]
-                            
-                            if not val_axes and num_cols:
-                                val_axes = [num_cols[0]] # 最低限のデフォルトfallback
-                                
-                            if not val_axes:
-                                st.warning("集計対象の数値項目が見つかりませんでした。")
+                            if not vs: st.warning("集計対象が見つかりません。")
+                            elif not r and not c:
+                                st.write(f"### 📋 合計: {', '.join(vs)}")
+                                st.dataframe(f_df[vs].sum().to_frame(name='合計').style.format("{:,.0f}"))
                             else:
-                                if not row_axis and not col_axis:
-                                    # 全体集計（Pivotというより単なるSum）
-                                    st.write(f"### 📋 全体合計: {', '.join(val_axes)}")
-                                    res = flex_df_ai[val_axes].sum().to_frame(name='合計')
-                                    st.dataframe(res.style.format("{:,.0f}"))
-                                else:
-                                    st.write(f"### 📋 集計結果: {row_axis or ''} {('× ' + col_axis) if col_axis else ''}")
-                                    pivot_res = flex_df_ai.pivot_table(
-                                        index=row_axis,
-                                        columns=col_axis,
-                                        values=val_axes,
-                                        aggfunc='sum',
-                                        margins=True,
-                                        margins_name="合計"
-                                    )
-                                    st.dataframe(pivot_res.style.format("{:,.0f}"), use_container_width=True)
-                                    
-                        except Exception as e:
-                            st.error(f"データ集計エラー: {e}")
-                    else:
-                        st.error("AIによる解析に失敗しました。もう少し具体的な指示をお願いします。")
+                                pivot_res = f_df.pivot_table(index=r, columns=c, values=vs, aggfunc='sum', margins=True, margins_name="合計")
+                                st.dataframe(pivot_res.style.format("{:,.0f}"), use_container_width=True)
+                        except Exception as e: st.error(f"集計エラー: {e}")
+                    else: st.error("AI解析に失敗しました。")
 
-# --- 3. アップロードタブ (GCS統合) ---
-
+# --- 4. RAWデータ追加 (V3方式 復元版) ---
 with tab_upload:
-    st.subheader("📥 データファイルのアップロード")
-    st.caption("ファイルサイズの制限なし — ブラウザからクラウドストレージへ直接送信されます。")
+    st.subheader("📥 大容量データのアップロード")
+    st.caption("1. ファイルを枠内にドロップ ➔ 2. 送信完了後、下のボタンを押して登録")
 
-    # すでにアップロード済みのファイル名リストを取得
-    all_raw = raw_df
-    existing_filenames = set(all_raw['filename'].unique()) if not all_raw.empty else set()
+    # セッションごとに固定のプレフィックス
+    if '_up_uuid' not in st.session_state:
+        st.session_state._up_uuid = uuid.uuid4().hex[:8]
+    uid = st.session_state._up_uuid
+    temp_data_path = f"up_data_{uid}.bin"
+    temp_tag_path = f"up_tag_{uid}.txt"
 
-    # --- ステップ1: ファイルのアップロード ---
-    st.markdown("#### ① ファイルをアップロード")
-    target_name = st.text_input(
-        "保存ファイル名",
-        placeholder="例: orchard_sales_2024Q1.csv",
-        help="アップロード先に使うファイル名を入力してください（拡張子 .csv を含む）。"
-    )
+    try:
+        data_signed_url = db_manager.get_gcs_signed_url(temp_data_path)
+        tag_signed_url = db_manager.get_gcs_signed_url(temp_tag_path)
 
-    if target_name:
-        if "." not in target_name:
-            st.warning("⚠️ 拡張子（.csv など）を含めてください。")
-        else:
-            dup_warn = target_name in existing_filenames
-            if dup_warn:
-                st.warning(f"⚠️ 「{target_name}」は既に取り込み済みです。インポート時に上書きされます。")
-            try:
-                signed_url = db_manager.get_gcs_signed_url(target_name)
-
-                upload_html = f"""
-                <div id="drop-zone" style="
-                    font-family: 'Segoe UI', sans-serif;
-                    border: 2px dashed #a0c4ff;
-                    border-radius: 12px;
-                    background: linear-gradient(135deg, #f0f7ff 0%, #e8f0fe 100%);
-                    padding: 28px 20px;
-                    text-align: center;
-                    cursor: pointer;
-                    transition: all 0.3s ease;
-                " onmouseover="this.style.borderColor='#007bff'; this.style.background='linear-gradient(135deg, #e8f0fe 0%, #d0e2ff 100%)';"
-                  onmouseout="this.style.borderColor='#a0c4ff'; this.style.background='linear-gradient(135deg, #f0f7ff 0%, #e8f0fe 100%)';">
-
-                    <div id="upload-icon" style="font-size: 2.5rem; margin-bottom: 8px;">📂</div>
-                    <div id="upload-label" style="font-size: 1rem; font-weight: 600; color: #333; margin-bottom: 4px;">
-                        ここをクリック、またはファイルをドラッグ＆ドロップ
-                    </div>
-                    <div id="upload-hint" style="font-size: 0.8rem; color: #888;">どんなサイズでもOK（200MB以上も対応）</div>
-
-                    <div id="progress-wrap" style="width: 90%; margin: 16px auto 0; display: none;">
-                        <div style="background: #e0e0e0; border-radius: 6px; overflow: hidden; height: 8px;">
-                            <div id="prog-bar" style="width:0%; height:100%; background: linear-gradient(90deg,#007bff,#00b4d8); transition: width .15s;"></div>
-                        </div>
-                        <p id="prog-text" style="font-size: 0.82rem; color: #555; margin-top: 6px;">0%</p>
-                    </div>
-
-                    <input type="file" id="file-pick" style="display:none;" autocomplete="off">
-                </div>
-
-                <script>
-                (function() {{
-                    const zone = document.getElementById('drop-zone');
-                    const pick = document.getElementById('file-pick');
-                    const icon = document.getElementById('upload-icon');
-                    const label = document.getElementById('upload-label');
-                    const hint = document.getElementById('upload-hint');
-                    const wrap = document.getElementById('progress-wrap');
-                    const bar  = document.getElementById('prog-bar');
-                    const txt  = document.getElementById('prog-text');
-
-                    zone.addEventListener('click', () => pick.click());
-                    zone.addEventListener('dragover', (e) => {{ e.preventDefault(); zone.style.borderColor='#007bff'; }});
-                    zone.addEventListener('dragleave', () => {{ zone.style.borderColor='#a0c4ff'; }});
-                    zone.addEventListener('drop', (e) => {{
-                        e.preventDefault();
-                        zone.style.borderColor='#a0c4ff';
-                        if (e.dataTransfer.files.length) {{ pick.files = e.dataTransfer.files; pick.dispatchEvent(new Event('change')); }}
-                    }});
-
-                    pick.onchange = () => {{
-                        const file = pick.files[0];
-                        if (!file) return;
-
-                        icon.innerText = '⏳';
-                        label.innerText = file.name + '  (' + (file.size/1024/1024).toFixed(1) + ' MB)';
-                        hint.innerText = 'アップロードを開始しています...';
-                        wrap.style.display = 'block';
-                        zone.style.cursor = 'default';
-                        zone.onclick = null;
-
-                        const xhr = new XMLHttpRequest();
-                        xhr.open('PUT', '{signed_url}', true);
-                        xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
-
-                        xhr.upload.onprogress = (ev) => {{
-                            if (ev.lengthComputable) {{
-                                const pct = Math.round(ev.loaded / ev.total * 100);
-                                bar.style.width = pct + '%';
-                                txt.innerText = pct + '%  (' + (ev.loaded/1024/1024).toFixed(1) + ' / ' + (ev.total/1024/1024).toFixed(1) + ' MB)';
-                                hint.innerText = '送信中...';
-                            }}
-                        }};
-
-                        xhr.onload = () => {{
-                            if (xhr.status === 200) {{
-                                icon.innerText = '✅';
-                                label.innerText = 'アップロード完了！';
-                                hint.innerText = '下の「② データベースに取り込む」へ進んでください。';
-                                hint.style.color = '#28a745';
-                                bar.style.background = 'linear-gradient(90deg,#28a745,#5cb85c)';
-                            }} else {{
-                                icon.innerText = '❌';
-                                label.innerText = 'エラー (HTTP ' + xhr.status + ')';
-                                hint.innerText = xhr.responseText || 'アップロードに失敗しました。';
-                                hint.style.color = '#dc3545';
-                            }}
-                        }};
-
-                        xhr.onerror = () => {{
-                            icon.innerText = '❌';
-                            label.innerText = 'ネットワークエラー';
-                            hint.innerText = '接続を確認してください。';
-                            hint.style.color = '#dc3545';
-                        }};
-
-                        xhr.send(file);
-                    }};
-                }})();
-                </script>
-                """
-                components.html(upload_html, height=200)
-            except Exception as e:
-                st.error(f"アップロード準備エラー: {e}")
-    else:
-        st.markdown("""
-        <div style="border: 2px dashed #ccc; border-radius: 12px; padding: 30px; text-align: center; color: #aaa;">
-            <div style="font-size: 2.5rem; margin-bottom: 8px;">📂</div>
-            <div style="font-size: 0.95rem;">⬆️ まず保存ファイル名を入力してください</div>
+        upload_html = f"""
+        <div id="drop-zone" style="border:2px dashed #94a3b8; border-radius:12px; background:#f8fafc; padding:35px; text-align:center; cursor:pointer;">
+            <div id="status" style="font-weight:600; color:#475569; font-family:sans-serif;">ここにファイルをドロップ</div>
+            <div id="bar-wrap" style="display:none; margin:15px auto; width:80%; background:#e2e8f0; height:8px; border-radius:4px; overflow:hidden;">
+                <div id="bar" style="width:0%; height:100%; background:#3b82f6; transition:width .2s;"></div>
+            </div>
+            <div id="hint" style="font-size:0.8rem; color:#94a3b8; margin-top:10px; font-family:sans-serif;">(自動でファイル名を認識します・1GBまで対応)</div>
+            <input type="file" id="file-in" style="display:none;">
         </div>
-        """, unsafe_allow_html=True)
+        <script>
+        const zone=document.getElementById('drop-zone'), input=document.getElementById('file-in'),
+              status=document.getElementById('status'), bar=document.getElementById('bar'), wrap=document.getElementById('bar-wrap');
+        zone.onclick=()=>input.click();
+        input.onchange=()=>{{ if(input.files[0]) upload(input.files[0]); }};
+        zone.ondragover=e=>{{ e.preventDefault(); zone.style.background='#eff6ff'; zone.style.borderColor='#3b82f6'; }};
+        zone.ondragleave=()=>{{ zone.style.background='#f8fafc'; zone.style.borderColor='#94a3b8'; }};
+        zone.ondrop=e=>{{ e.preventDefault(); if(e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); }};
 
-    st.divider()
+        async function upload(file) {{
+            status.innerText = file.name + ' を送信中...';
+            wrap.style.display='block';
+            const xhr=new XMLHttpRequest();
+            xhr.open('PUT', '{data_signed_url}');
+            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+            xhr.upload.onprogress=e=>{{
+                const p=Math.round(e.loaded/e.total*100);
+                bar.style.width=p+'%';
+            }};
+            xhr.onload=async ()=>{{
+                if(xhr.status===200) {{
+                    status.innerText = '本体完了。ファイル名を記録中...';
+                    const tagXhr = new XMLHttpRequest();
+                    tagXhr.open('PUT', '{tag_signed_url}');
+                    tagXhr.setRequestHeader('Content-Type', 'application/octet-stream');
+                    tagXhr.onload = () => {{
+                        if (tagXhr.status === 200) {{
+                            status.innerText = '✅ 送信完了！「' + file.name + '」の登録準備が整いました';
+                            wrap.style.display='none';
+                        }} else {{ status.innerText = 'エラー: ' + tagXhr.status; }}
+                    }};
+                    tagXhr.send(file.name);
+                }} else {{ status.innerText='送信エラー: ' + xhr.status; }}
+            }};
+            xhr.send(file);
+        }}
+        </script>
+        """
+        components.html(upload_html, height=200)
+    except Exception as e:
+        st.error(f"署名付きURLの取得に失敗しました: {e}")
 
-    # --- ステップ2: GCSからBigQueryへ取り込み ---
-    st.markdown("#### ② データベースに取り込む")
-    gcs_blobs = db_manager.list_gcs_files()
-    if gcs_blobs:
-        st.caption("アップロードされたファイルを解析し、BigQuery に保存します。完了後、ストレージからは自動で削除されます。")
+    # 重複チェックの確認
+    if 'dup_target' in st.session_state:
+        target = st.session_state.dup_target
+        st.warning(f"⚠️ {target} は既に登録されています。上書きしますか？")
+        c1, c2 = st.columns(2)
+        if c1.button("🔥 上書きして登録", type="primary", use_container_width=True):
+            with st.status("🔄 上書き登録中...") as force_stat:
+                try:
+                    blob_io = db_manager.get_gcs_blob_io(temp_data_path)
+                    df = processor.parse_raw_only(blob_io, rules=rules)
+                    if df is not None:
+                        db_manager.save_raw_data(df, target, "AutoDetect", overwrite=True)
+                        db_manager.delete_gcs_file(temp_data_path)
+                        db_manager.delete_gcs_file(temp_tag_path)
+                        del st.session_state.dup_target
+                        force_stat.update(label=f"✅ {target} を上書き登録しました", state="complete")
+                        clear_app_cache()
+                        time.sleep(1); st.rerun()
+                except Exception as e: st.error(f"エラー: {e}")
+        if c2.button("🚫 キャンセル", use_container_width=True):
+            del st.session_state.dup_target; st.rerun()
+        st.stop()
 
-        # 一括取り込みボタン
-        if len(gcs_blobs) > 1:
-            if st.button("🚀 すべてまとめて取り込む", type="primary"):
-                rules = fetch_rules(project_id)
-                ok_count = 0
-                with st.status("一括処理中...") as batch_st:
-                    for blob in gcs_blobs:
-                        try:
-                            blob_io = db_manager.get_gcs_blob_io(blob['name'])
-                            df = processor.parse_raw_only(blob_io, rules=rules)
-                            if df is not None:
-                                s_type = processor.detect_source(blob['name'])
-                                db_manager.save_raw_data(df, blob['name'], s_type, overwrite=True)
-                                db_manager.delete_gcs_file(blob['name'])
-                                ok_count += 1
-                        except Exception as e:
-                            st.error(f"エラー ({blob['name']}): {e}")
-                    batch_st.update(label=f"✅ {ok_count} 件を取り込みました", state="complete")
-                clear_app_cache()
-                time.sleep(1)
-                st.rerun()
-
-        for blob in gcs_blobs:
-            with st.container(border=True):
-                c1, c2, c3 = st.columns([3, 1, 1])
-                size_mb = blob['size'] / 1024 / 1024 if blob['size'] else 0
-                c1.write(f"📦 **{blob['name']}**  ({size_mb:.1f} MB)")
-                if c2.button("🚀 取り込む", key=f"imp_{blob['name']}"):
-                    with st.status(f"{blob['name']} を処理中...") as imp_st:
-                        try:
-                            blob_io = db_manager.get_gcs_blob_io(blob['name'])
-                            rules = fetch_rules(project_id)
-                            df = processor.parse_raw_only(blob_io, rules=rules)
-                            if df is not None:
-                                s_type = processor.detect_source(blob['name'])
-                                row_count = db_manager.save_raw_data(df, blob['name'], s_type, overwrite=True)
-                                db_manager.delete_gcs_file(blob['name'])
-                                imp_st.update(label=f"✅ {blob['name']} ({row_count:,}件)", state="complete")
-                                st.toast(f"取り込み完了: {blob['name']}", icon="✅")
-                                clear_app_cache()
-                                time.sleep(1)
-                                st.rerun()
-                            else:
-                                st.error("解析に失敗しました。")
-                        except Exception as e:
-                            st.error(f"エラー: {e}")
-                if c3.button("🗑️ 削除", key=f"delg_{blob['name']}"):
-                    db_manager.delete_gcs_file(blob['name'])
+    if st.button("🚀 BigQueryへの登録を開始する", type="primary", use_container_width=True):
+        with st.status("⌛ 準備を確認中...") as stat:
+            try:
+                tag_io = db_manager.get_gcs_blob_io(temp_tag_path)
+                if not tag_io:
+                    st.warning("アップロードが完了していません。")
+                    st.stop()
+                detected_fn = tag_io.read().decode('utf-8').strip()
+                
+                # 履歴取得
+                all_history = db_manager.get_file_history()
+                if not all_history.empty and (detected_fn in all_history['filename'].values):
+                    st.session_state.dup_target = detected_fn
                     st.rerun()
-    else:
-        st.info("💡 ①でアップロードしたファイルがここに表示されます。")
+
+                stat.update(label=f"📦 {detected_fn} を処理中...")
+                blob_io = db_manager.get_gcs_blob_io(temp_data_path)
+                df = processor.parse_raw_only(blob_io, rules=rules)
+                if df is not None:
+                    db_manager.save_raw_data(df, detected_fn, "AutoDetect", overwrite=True)
+                    db_manager.delete_gcs_file(temp_data_path)
+                    db_manager.delete_gcs_file(temp_tag_path)
+                    stat.update(label=f"✅ {detected_fn} を登録しました", state="complete")
+                    clear_app_cache()
+                    time.sleep(1); st.rerun()
+                else: stat.update(label="❌ 解析失敗。形式を確認してください。", state="error")
+            except Exception as e: st.error(f"エラー: {e}")
 
     st.divider()
-
-    # --- 取り込み済みデータ一覧 ---
-    st.markdown("#### 📋 取り込み済みデータ")
-    if not all_raw.empty:
-        agg_dict = {'source_type': 'first', 'row_index': 'count'}
-        has_created_at = 'created_at' in all_raw.columns
-        if has_created_at:
-            agg_dict['created_at'] = 'max'
-        file_summary = all_raw.groupby('filename').agg(agg_dict).reset_index()
-        if has_created_at:
-            file_summary = file_summary.sort_values('created_at', ascending=False)
-        else:
-            file_summary = file_summary.sort_values('filename')
-
-        for i, row in file_summary.iterrows():
+    st.markdown("#### 📋 取り込み済み履歴 (最新10件)")
+    history_df = db_manager.get_file_history()
+    if not history_df.empty:
+        for _, h in history_df.head(10).iterrows():
             with st.container(border=True):
-                c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
-                c1.write(f"📄 **{row['filename']}**")
-                c2.write(f"🏷️ {row['source_type']}")
-                c3.write(f"📊 {row['row_index']:,} 件")
-                if c4.button("🗑️ 削除", key=f"del_{row['filename']}_{i}"):
-                    with st.spinner(f"{row['filename']} を削除中..."):
-                        if db_manager.delete_raw_data(row['filename']):
-                            st.toast(f"削除しました: {row['filename']}", icon="🗑️")
-                            clear_app_cache()
-                            time.sleep(1)
-                            st.rerun()
-                        else:
-                            st.error(f"削除に失敗しました: {row['filename']}")
-    else:
-        st.info("取り込み済みのデータはありません。")
+                c1, c2, c3 = st.columns([4, 2, 1])
+                c1.write(f"📄 **{h['filename']}**")
+                c2.caption(f"📊 {h['row_count']:,} 件 | 📅 {h['uploaded_at']}")
+                if c3.button("🗑️ 削除", key=f"del_h_{h['filename']}"):
+                    db_manager.delete_raw_data(h['filename'])
+                    clear_app_cache(); st.rerun()
 
-# --- 3. 管理タブ (リセット & マッピング) ---
+# --- 5. 管理タブ (V3/V4 マッピング管理) ---
 with tab_settings:
-    st.subheader("🔗 統合マッピング定義")
-    st.info("RAWデータに含まれるヘッダーをドロップダウンから選択して、統合項目を定義します。")
+    st.subheader("⚙️ システム管理")
     
-    # RAWデータからヘッダーを取得
-    h_orchard = ["(未設定)"] + fetch_headers(project_id, "ORCHARD")
-    h_nextone = ["(未設定)"] + fetch_headers(project_id, "NEXTONE")
-    h_itunes = ["(未設定)"] + fetch_headers(project_id, "ITUNES")
+    # マッピング管理
+    st.markdown("#### 🔗 統合マッピング定義")
+    orch_cols = db_manager.get_headers_by_pattern("Orchard%")
+    next_cols = db_manager.get_headers_by_pattern("DivSiteAll%")
+    itunes_cols = db_manager.get_headers_by_pattern("%_ZZ%")
     
-    if 'editing_col' not in st.session_state: st.session_state.editing_col = None
-    cur_mappings = fetch_mappings(project_id)
-    edit_item = cur_mappings[cur_mappings['unified_name'] == st.session_state.editing_col].iloc[0] if st.session_state.editing_col else None
+    if 'edit_mapping' not in st.session_state: st.session_state.edit_mapping = None
+    edit_data = st.session_state.edit_mapping
 
     with st.form("mapping_form"):
-        u_name = st.text_input("統合項目名", value=st.session_state.editing_col if st.session_state.editing_col else "")
-        c2, c3, c4 = st.columns(3)
-        # ドロップダウン化
-        idx_o = h_orchard.index(edit_item['orchard_col']) if edit_item is not None and edit_item['orchard_col'] in h_orchard else 0
-        idx_n = h_nextone.index(edit_item['nextone_col']) if edit_item is not None and edit_item['nextone_col'] in h_nextone else 0
-        idx_i = h_itunes.index(edit_item['itunes_col']) if edit_item is not None and edit_item['itunes_col'] in h_itunes else 0
+        u_name = st.text_input("統合項目名", value=edit_data['unified_name'] if edit_data else "")
+        c1, c2, c3 = st.columns(3)
+        def get_idx(lst, val):
+            try: return ([""] + lst).index(val)
+            except: return 0
         
-        o_col = c2.selectbox("Orchard 列名", h_orchard, index=idx_o)
-        n_col = c3.selectbox("NexTone 列名", h_nextone, index=idx_n)
-        i_col = c4.selectbox("iTunes 列名", h_itunes, index=idx_i)
+        o_col = c1.selectbox("Orchard 列", [""] + (orch_cols or []), index=get_idx(orch_cols, edit_data['orchard_col']) if edit_data else 0)
+        n_col = c2.selectbox("NexTone 列", [""] + (next_cols or []), index=get_idx(next_cols, edit_data['nextone_col']) if edit_data else 0)
+        i_col = c3.selectbox("iTunes 列", [""] + (itunes_cols or []), index=get_idx(itunes_cols, edit_data['itunes_col']) if edit_data else 0)
         
-        is_d = st.checkbox("日付として処理 (YYYY-MM-01に統一)", value=bool(edit_item['is_date']) if edit_item is not None else False)
-        is_n = st.checkbox("数値として処理", value=bool(edit_item['is_numeric']) if edit_item is not None else False)
+        is_d = st.checkbox("日付項目", value=edit_data['is_date'] if edit_data else False)
+        is_n = st.checkbox("数値項目", value=edit_data['is_numeric'] if edit_data else False)
         
-        if st.form_submit_button("💾 保存"):
+        if st.form_submit_button("💾 マッピングを保存"):
             if u_name:
-                try:
-                    db_manager.save_unified_column(u_name, 
-                        o_col if o_col != "(未設定)" else "",
-                        n_col if n_col != "(未設定)" else "",
-                        i_col if i_col != "(未設定)" else "",
-                        is_d, is_n)
-                    st.session_state.editing_col = None
-                    clear_app_cache()
-                    st.toast(f"マッピングを保存しました: {u_name}", icon="✅")
-                    time.sleep(2)
-                    st.rerun()
-                except Exception as e:
-                    logging.error(f"Mapping save error: {e}")
-                    st.error(f"マッピング保存エラー: {e}")
+                db_manager.save_unified_column(u_name, o_col, n_col, i_col, is_d, is_n)
+                st.session_state.edit_mapping = None
+                clear_app_cache(); st.rerun()
 
-    # マッピング一覧
-    if not cur_mappings.empty:
-        for i, m in cur_mappings.iterrows():
-            with st.container(border=True):
-                col_t, col_b = st.columns([4, 1])
-                col_t.write(f"📁 **{m['unified_name']}** (O: {m['orchard_col']}, N: {m['nextone_col']}, I: {m['itunes_col']})")
-                if col_b.button("📝 編集", key=f"edit_{i}"):
-                    st.session_state.editing_col = m['unified_name']
-                    st.rerun()
+    cur_mappings = fetch_mappings(project_id)
+    for i, m in cur_mappings.iterrows():
+        with st.container(border=True):
+            ct, ce, cd = st.columns([4, 1, 1])
+            ct.write(f"📁 **{m['unified_name']}** (O:{m['orchard_col']} / N:{m['nextone_col']} / I:{m['itunes_col']})")
+            if ce.button("📝 編集", key=f"ed_{i}"):
+                st.session_state.edit_mapping = m.to_dict(); st.rerun()
+            if cd.button("🗑️ 削除", key=f"dl_{i}"):
+                db_manager.delete_unified_column(m['unified_name'])
+                clear_app_cache(); st.rerun()
 
     st.divider()
-    st.subheader("📄 解析ルールの設定")
-    with st.form("rule_form", clear_on_submit=True):
+    # ルール管理
+    st.markdown("#### 📄 解析ルールの設定")
+    with st.form("rule_add"):
         c1, c2, c3 = st.columns([3, 1, 1])
-        pat = c1.text_input("ファイル名パターン")
-        hr = c2.number_input("ヘッダー行目", min_value=1, value=1)
-        if c3.form_submit_button("➕ ルール追加"):
+        pat = c1.text_input("ファイル名キーワード")
+        hr = c2.number_input("ヘッダー開始行", min_value=1, value=1)
+        if c3.form_submit_button("➕ 追加"):
             if pat:
-                try:
-                    logging.info(f"Attempting to add parsing rule: {pat}")
-                    # ユニーク性を担保するため既存があれば削除
-                    db_manager.delete_parsing_rule(pat)
-                    db_manager.save_parsing_rule(pat, hr - 1)
-                    clear_app_cache()
-                    st.toast(f"追加完了: {pat}", icon="➕")
-                    time.sleep(2)
-                    st.rerun()
-                except Exception as e:
-                    logging.error(f"Rule addition error: {e}")
-                    st.error(f"ルール追加エラー: {e}")
-
-    # 解析ルールの一覧表示
-    cur_rules = fetch_rules(project_id)
-    if not cur_rules.empty:
-        st.write("📋 現在登録されている解析ルール")
-        for idx, row in cur_rules.iterrows():
-            with st.container(border=True):
-                r1, r2, r3 = st.columns([3, 1, 1])
-                r1.write(f"パターン: `{row['file_pattern']}`")
-                r2.write(f"ヘッダー: {row['header_row'] + 1}行目")
-                if r3.button("🗑️ 削除", key=f"del_rule_{idx}"):
-                    db_manager.delete_parsing_rule(row['file_pattern'])
-                    clear_app_cache()
-                    st.toast(f"削除しました: {row['file_pattern']}", icon="🗑️")
-                    time.sleep(2)
-                    st.rerun()
+                db_manager.save_parsing_rule(pat, hr - 1)
+                clear_app_cache(); st.rerun()
+                
+    for idx, row in rules.iterrows():
+        with st.container(border=True):
+            r1, r2, r3 = st.columns([3, 1, 1])
+            r1.write(f"パターン: `{row['file_pattern']}`")
+            r2.write(f"ヘッダー: {row['header_row']+1}行目")
+            if r3.button("🗑️ 削除", key=f"dr_{idx}"):
+                db_manager.delete_parsing_rule(row['file_pattern'])
+                clear_app_cache(); st.rerun()
 
     st.divider()
-    st.subheader("⚠️ データベースの管理")
-    with st.expander("💣 危険な操作"):
-        st.warning("この操作は取り消せません。すべてのデータと設定が消去されます。")
-        if st.button("🔥 データベースを完全にリセットする", type="primary"):
-            db_manager.reset_dataset()
-            clear_app_cache()
-            st.success("リセット完了。ページを更新してください。")
-            st.rerun()
+    if st.button("💣 データベースを完全にリセットする", type="primary"):
+        db_manager.reset_dataset(); clear_app_cache(); st.rerun()

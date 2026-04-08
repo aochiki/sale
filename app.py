@@ -61,23 +61,21 @@ st.markdown("---")
 with st.expander("⚙️ システム設定", expanded=not default_project_id):
     project_id_input = st.text_input("GCP Project ID", value=default_project_id).strip()
     if project_id_input.startswith("http"):
-        st.error("⚠️ プロジェクトIDにURLが入力されているようです。'sales-aggregator-123' のようなIDを入力してください。")
+        st.error("⚠️ プロジェクトIDにURLが入力されているようです。")
         st.stop()
     
+    # API キー入力欄 (ここも常に表示)
+    api_key_input = st.text_input("Gemini API Key", value=st.session_state.get('gemini_api_key', ''), type="password")
+    
     project_id = project_id_input
-    
-    # API キー入力欄の追加
-    api_key_input = st.text_input("Gemini API Key (Google AI Studio)", value=st.session_state.get('gemini_api_key', ''), type="password")
-    
     if project_id:
         st.session_state['project_id'] = project_id
         if api_key_input:
             st.session_state['gemini_api_key'] = api_key_input
-        
         db_manager = get_db(project_id)
         processor = SalesAggregator()
     else:
-        st.stop()
+        st.info("💡 処理を開始するには GCP Project ID を入力してください。")
 
 tab_view, tab_flexible, tab_ai, tab_upload, tab_settings = st.tabs([
     "📋 売上データ閲覧", "📊 自由集計", "🤖 AI集計", "📥 RAWデータ追加", "⚙️ システム管理"

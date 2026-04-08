@@ -252,7 +252,7 @@ with tab_upload:
                     blob_io = db_manager.get_gcs_blob_io(temp_data_path)
                     df = processor.parse_raw_only(blob_io, rules=rules)
                     if df is not None:
-                        db_manager.save_raw_data(df, target, "AutoDetect", overwrite=True)
+                        db_manager.save_raw_data(df, target, processor.detect_source(target), overwrite=True)
                         db_manager.delete_gcs_file(temp_data_path)
                         db_manager.delete_gcs_file(temp_tag_path)
                         del st.session_state.dup_target
@@ -283,7 +283,7 @@ with tab_upload:
                 blob_io = db_manager.get_gcs_blob_io(temp_data_path)
                 df = processor.parse_raw_only(blob_io, rules=rules)
                 if df is not None:
-                    db_manager.save_raw_data(df, detected_fn, "AutoDetect", overwrite=True)
+                    db_manager.save_raw_data(df, detected_fn, processor.detect_source(detected_fn), overwrite=True)
                     db_manager.delete_gcs_file(temp_data_path)
                     db_manager.delete_gcs_file(temp_tag_path)
                     stat.update(label=f"✅ {detected_fn} を登録しました", state="complete")

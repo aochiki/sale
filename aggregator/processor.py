@@ -11,11 +11,12 @@ class SalesAggregator:
 
     def detect_source(self, filename):
         """ファイル名から会社タイプを判定する"""
-        if fnmatch.fnmatch(filename, "Orchard*"):
+        fn = filename.lower()
+        if fnmatch.fnmatch(fn, "orchard*"):
             return "ORCHARD"
-        elif fnmatch.fnmatch(filename, "DivSiteAll*"):
+        elif fnmatch.fnmatch(fn, "divsiteall*"):
             return "NEXTONE"
-        elif "_ZZ" in filename:
+        elif "_zz" in fn:
             return "ITUNES"
         return "UNKNOWN"
 
@@ -98,6 +99,11 @@ class SalesAggregator:
         for filename in raw_df['filename'].unique():
             file_rows = raw_df[raw_df['filename'] == filename]
             source_type = file_rows['source_type'].iloc[0]
+            # もし AutoDetect や UNKNOWN の場合は、ファイル名から動的に再判定を試みる
+            if source_type in ["AutoDetect", "UNKNOWN"]:
+                detected = self.detect_source(filename)
+                if detected != "UNKNOWN":
+                    source_type = detected
             
             try:
                 # 各行のJSONからデータフレームを復元

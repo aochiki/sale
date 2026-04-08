@@ -134,11 +134,12 @@ class SalesAggregator:
             "ITUNES": "itunes_col"
         }.get(source_type.upper(), "orchard_col")
 
-        # RAWデータのカラム名は大文字/小文字そのままの可能性があるため、マッピング側と比較しやすくする
-        df_col_map = {str(c).strip(): c for c in df.columns} 
+        # 統合後のカラム名を一貫させるため、元データのカラム名とマッピング定義を正規化
+        df.columns = [str(c).strip() for c in df.columns]
+        df_col_map = {c: c for c in df.columns} 
 
         for _, row in mappings.iterrows():
-            unified_name = row['unified_name']
+            unified_name = str(row['unified_name']).strip()
             source_col = str(row[src_col_key]).strip()
 
             if source_col in df_col_map:

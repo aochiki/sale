@@ -6,3 +6,4 @@ google-api-core
 db-dtypes
 pyarrow
 google-cloud-aiplatform
+google-genai

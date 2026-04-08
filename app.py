@@ -59,9 +59,21 @@ st.caption("Auto-Detect Upload & AI Aggregation")
 st.markdown("---")
 
 with st.expander("⚙️ システム設定", expanded=not default_project_id):
-    project_id = st.text_input("GCP Project ID", value=default_project_id)
+    project_id_input = st.text_input("GCP Project ID", value=default_project_id).strip()
+    if project_id_input.startswith("http"):
+        st.error("⚠️ プロジェクトIDにURLが入力されているようです。'sales-aggregator-123' のようなIDを入力してください。")
+        st.stop()
+    
+    project_id = project_id_input
+    
+    # API キー入力欄の追加
+    api_key_input = st.text_input("Gemini API Key (Google AI Studio)", value=st.session_state.get('gemini_api_key', ''), type="password")
+    
     if project_id:
         st.session_state['project_id'] = project_id
+        if api_key_input:
+            st.session_state['gemini_api_key'] = api_key_input
+        
         db_manager = get_db(project_id)
         processor = SalesAggregator()
     else:
@@ -151,28 +163,54 @@ with tab_ai:
                     attr_cols_ai = [m['unified_name'] for _, m in mappings.iterrows() if not m['is_numeric'] and not m['is_date']]
                     num_cols_ai = [m['unified_name'] for _, m in mappings.iterrows() if m['is_numeric']]
                     all_cols = attr_cols_ai + (['SOURCE'] if 'SOURCE' in unified_df.columns else [])
-                    parsed = parse_natural_language_query(project_id, user_query, all_cols, num_cols_ai)
+                    
+                    gemini_key = st.session_state.get('gemini_api_key')
+                    if not gemini_key:
+                        st.error("Gemini APIキーが設定されていません。「システム設定」で入力してください。")
+                        parsed = None
+                    else:
+                        parsed = parse_natural_language_query(project_id, user_query, all_cols, num_cols_ai, api_key=gemini_key)
                     
                     if parsed:
-                        with st.expander("🔍 AIの解析結果"): st.json(parsed)
-                        try:
-                            f_df = flex_df_ai.copy()
-                            for col, val in parsed.get("filters", {}).items():
-                                if col in f_df.columns:
-                                    f_df = f_df[f_df[col].astype(str).str.contains(str(val), na=False, case=False)]
-                            
-                            r = parsed.get("row_axis"); c = parsed.get("col_axis"); vs = parsed.get("value_axis", [])
-                            if not vs and num_cols_ai: vs = [num_cols_ai[0]]
-                            
-                            if not vs: st.warning("集計対象が見つかりません。")
-                            elif not r and not c:
-                                st.write(f"### 📋 合計: {', '.join(vs)}")
-                                st.dataframe(f_df[vs].sum().to_frame(name='合計').style.format("{:,.0f}"))
-                            else:
-                                pivot_res = f_df.pivot_table(index=r, columns=c, values=vs, aggfunc='sum', margins=True, margins_name="合計")
-                                st.dataframe(pivot_res.style.format("{:,.0f}"), use_container_width=True)
-                        except Exception as e: st.error(f"集計エラー: {e}")
-                    else: st.error("AI解析に失敗しました。")
+                        if "error" in parsed:
+                            st.error(f"AI解析エラーの詳細: {parsed['error']}")
+                            st.info("ヒント: Google Cloud Projectで Vertex AI API が有効になっているか、認証が正しいか確認してください。")
+                        else:
+                            with st.expander("🔍 AIの解析結果"): st.json(parsed)
+                            try:
+                                f_df = flex_df_ai.copy()
+                                # フィルタの適用 (トリムして柔軟に一致させる)
+                                for col, val in parsed.get("filters", {}).items():
+                                    col_trimmed = str(col).strip()
+                                    if col_trimmed in f_df.columns:
+                                        f_df = f_df[f_df[col_trimmed].astype(str).str.contains(str(val), na=False, case=False)]
+                                
+                                # 軸の取得とトリム
+                                r = str(parsed.get("row_axis")).strip() if parsed.get("row_axis") else None
+                                c = str(parsed.get("col_axis")).strip() if parsed.get("col_axis") else None
+                                vs = [str(v).strip() for v in parsed.get("value_axis", []) if v]
+                                
+                                if not vs and num_cols_ai: vs = [num_cols_ai[0]]
+                                
+                                # カラムの存在チェック
+                                missing_cols = [v for v in vs if v not in f_df.columns]
+                                if missing_cols:
+                                    st.warning(f"以下の項目がデータに見つかりません: {', '.join(missing_cols)}")
+                                    st.info(f"利用可能な項目: {', '.join(f_df.columns.tolist())}")
+                                elif not vs:
+                                    st.warning("集計対象が見つかりません。")
+                                elif not r and not c:
+                                    st.write(f"### 📋 合計: {', '.join(vs)}")
+                                    st.dataframe(f_df[vs].sum().to_frame(name='合計').style.format("{:,.0f}"))
+                                else:
+                                    # 軸の存在もチェック
+                                    if r and r not in f_df.columns: st.error(f"行軸 '{r}' が見つかりません。"); st.stop()
+                                    if c and c not in f_df.columns: st.error(f"列軸 '{c}' が見つかりません。"); st.stop()
+                                    
+                                    pivot_res = f_df.pivot_table(index=r, columns=c, values=vs, aggfunc='sum', margins=True, margins_name="合計")
+                                    st.dataframe(pivot_res.style.format("{:,.0f}"), use_container_width=True)
+                            except Exception as e: st.error(f"集計エラー: {e}")
+                    else: st.error("AI解析に失敗しました。(レスポンスが空です)")
 
 # --- 4. RAWデータ追加 (V3方式 復元版) ---
 with tab_upload:

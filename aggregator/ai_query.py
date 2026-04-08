@@ -1,32 +1,24 @@
 import json
 import logging
-import vertexai
-from vertexai.generative_models import GenerativeModel
+from google import genai
+from google.genai import types
 
 logger = logging.getLogger(__name__)
 
-def parse_natural_language_query(project_id, user_text, unified_columns, num_cols):
+def parse_natural_language_query(project_id, user_text, unified_columns, num_cols, api_key=None):
     """
     ユーザーの自然言語入力を解析し、Pandas ピボットテーブル用のパラメータをJSONで返す。
-    
-    Args:
-        project_id (str): GCP Project ID
-        user_text (str): ユーザーからの自然言語要求
-        unified_columns (list): セレクト可能な全カラム名のリスト
-        num_cols (list): 数値（集計対象）として定義されたカラム名のリスト
-        
-    Returns:
-        dict: 抽出されたパラメータを持つ辞書
+    最新の google-genai SDK (APIキー方式) を使用。
     """
+    if not api_key:
+        return {"error": "APIキーが指定されていません。"}
+
     try:
-        # Vertex AI の初期化
-        vertexai.init(project=project_id, location="asia-northeast1")
+        # Google AI SDK クライアントの初期化
+        client = genai.Client(api_key=api_key)
         
-        # 軽量・高速なFlashモデル
-        model = GenerativeModel("gemini-1.5-flash")
-        
-        cols_text = ", ".join(unified_columns) if unified_columns else "未定義"
-        num_cols_text = ", ".join(num_cols) if num_cols else "未定義"
+        cols_text = ", ".join([str(c).strip() for c in unified_columns]) if unified_columns else "未定義"
+        num_cols_text = ", ".join([str(c).strip() for c in num_cols]) if num_cols else "未定義"
         
         prompt = f"""
 あなたは売上データ集計用のアシスタントです。ユーザーの要望から、ピボットテーブルを作成するための設定を抽出してください。
@@ -49,18 +41,28 @@ def parse_natural_language_query(project_id, user_text, unified_columns, num_col
   "value_axis": ["表示する値（数値項目）のリスト。要望になければデフォルトとして {num_cols_text}のうち最も適切なものを含める"]
 }}
 """
-        response = model.generate_content(
-            prompt,
-            generation_config={
-                "response_mime_type": "application/json", 
-                "temperature": 0.0
-            }
-        )
+        # 最新 SDK でのモデル呼び出し
+        try:
+            response = client.models.generate_content(
+                model="gemini-flash-latest",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.0
+                )
+            )
+        except Exception as e:
+            if "not found" in str(e).lower():
+                # 利用可能なモデルをリストアップして詳細を表示
+                models = [m.name for m in client.models.list()]
+                available = ", ".join(models)
+                return {"error": f"モデルが見つかりません。利用可能なモデル: {available}"}
+            raise e
         
         result_text = response.text.strip()
         result_json = json.loads(result_text)
         return result_json
 
     except Exception as e:
-        logger.error(f"Vertex AI 解析エラー: {e}")
-        return None
+        logger.error(f"Gemini API (New SDK) 解析エラー: {e}")
+        return {"error": str(e)}

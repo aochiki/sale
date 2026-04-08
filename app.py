@@ -58,14 +58,14 @@ st.title("📊 売上データ管理システム")
 st.caption("Auto-Detect Upload & AI Aggregation")
 st.markdown("---")
 
-with st.expander("⚙️ システム設定", expanded=not default_project_id):
+with st.expander("⚙️ システム設定", expanded=True):
+    # API キー入力欄 (最優先で表示)
+    api_key_input = st.text_input("Gemini API Key", value=st.session_state.get('gemini_api_key', ''), type="password")
+    
     project_id_input = st.text_input("GCP Project ID", value=default_project_id).strip()
     if project_id_input.startswith("http"):
-        st.error("⚠️ プロジェクトIDにURLが入力されているようです。")
-        st.stop()
-    
-    # API キー入力欄 (ここも常に表示)
-    api_key_input = st.text_input("Gemini API Key", value=st.session_state.get('gemini_api_key', ''), type="password")
+        st.error("⚠️ プロジェクトIDにURLが入力されているようです。'sales-aggregator-123' のようなIDを入力してください。")
+        # st.stop() は削除
     
     project_id = project_id_input
     if project_id:

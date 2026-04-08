@@ -3,6 +3,7 @@ import streamlit.components.v1 as components
 import pandas as pd
 from aggregator.processor import SalesAggregator
 from aggregator.database_bq import DatabaseManager
+from aggregator.ai_query import parse_natural_language_query
 import io
 import datetime
 import logging
@@ -69,7 +70,7 @@ with st.expander("⚙️ システム設定", expanded=not default_project_id):
     else:
         st.stop()
 
-tab_view, tab_flexible, tab_upload, tab_settings = st.tabs(["📋 売上データ閲覧", "📊 自由集計", "📥 RAWデータ追加", "⚙️ システム管理"])
+tab_view, tab_flexible, tab_ai, tab_upload, tab_settings = st.tabs(["📋 売上データ閲覧", "📊 自由集計", "🤖 AI集計", "📥 RAWデータ追加", "⚙️ システム管理"])
 
 # --- 共通データの取得 ---
 raw_df = fetch_raw_data(project_id)
@@ -168,7 +169,90 @@ with tab_flexible:
                 st.info("選択した項目の組み合わせで集計できませんでした。軸を変更してみてください。")
 
 
+# --- 2.5 AI集計タブ (Gemini API) ---
+with tab_ai:
+    if unified_df.empty:
+        st.info("集計可能なデータがありません。")
+    else:
+        st.subheader("🤖 自然言語によるAI集計")
+        st.caption("「かりゆし58の曲ごとの売上を表示」「AWAの2024年3月のアーティスト別売上」のように入力してください。")
+        
+        # 属性・数値・日付項目の準備
+        attr_cols = [m['unified_name'] for _, m in mappings.iterrows() if not m['is_numeric'] and not m['is_date']]
+        num_cols = [m['unified_name'] for _, m in mappings.iterrows() if m['is_numeric']]
+        date_col = next((m['unified_name'] for _, m in mappings.iterrows() if m['is_date']), None)
+        
+        # 先に期間でザックリ絞れるようにしておく（安定性向上のため）
+        flex_df_ai = unified_df.copy()
+        if date_col:
+            months = sorted(flex_df_ai[date_col].dropna().unique().tolist())
+            c1, c2 = st.columns(2)
+            start_m_ai = c1.selectbox("🚩 開始月 (AI)", months, index=0, key="ai_start")
+            end_m_ai = c2.selectbox("🏁 終了月 (AI)", months, index=len(months)-1, key="ai_end")
+            flex_df_ai = flex_df_ai[(flex_df_ai[date_col] >= start_m_ai) & (flex_df_ai[date_col] <= end_m_ai)].copy()
+
+        user_query = st.chat_input("AIに集計をお願いする...")
+        if user_query:
+            st.chat_message("user").write(user_query)
+            
+            with st.chat_message("assistant"):
+                with st.spinner("AIが意図を解析中..."):
+                    all_cols = attr_cols + (['SOURCE'] if 'SOURCE' in unified_df.columns else [])
+                    
+                    # Vertex AI を呼び出して解析
+                    parsed_params = parse_natural_language_query(project_id, user_query, all_cols, num_cols)
+                    
+                    if parsed_params:
+                        # 抽出されたパラメータを表示
+                        with st.expander("🔍 AIの解析結果（JSON）", expanded=False):
+                            st.json(parsed_params)
+                        
+                        try:
+                            # フィルタの適用
+                            filters = parsed_params.get("filters", {})
+                            for col, val in filters.items():
+                                if col in flex_df_ai.columns and val:
+                                    flex_df_ai = flex_df_ai[flex_df_ai[col].astype(str).str.contains(str(val), na=False, case=False)]
+                            
+                            row_axis = parsed_params.get("row_axis")
+                            col_axis = parsed_params.get("col_axis")
+                            val_axes = parsed_params.get("value_axis", [])
+                            
+                            # バリデーション
+                            if row_axis not in flex_df_ai.columns: row_axis = None
+                            if col_axis not in flex_df_ai.columns: col_axis = None
+                            val_axes = [v for v in val_axes if v in flex_df_ai.columns]
+                            
+                            if not val_axes and num_cols:
+                                val_axes = [num_cols[0]] # 最低限のデフォルトfallback
+                                
+                            if not val_axes:
+                                st.warning("集計対象の数値項目が見つかりませんでした。")
+                            else:
+                                if not row_axis and not col_axis:
+                                    # 全体集計（Pivotというより単なるSum）
+                                    st.write(f"### 📋 全体合計: {', '.join(val_axes)}")
+                                    res = flex_df_ai[val_axes].sum().to_frame(name='合計')
+                                    st.dataframe(res.style.format("{:,.0f}"))
+                                else:
+                                    st.write(f"### 📋 集計結果: {row_axis or ''} {('× ' + col_axis) if col_axis else ''}")
+                                    pivot_res = flex_df_ai.pivot_table(
+                                        index=row_axis,
+                                        columns=col_axis,
+                                        values=val_axes,
+                                        aggfunc='sum',
+                                        margins=True,
+                                        margins_name="合計"
+                                    )
+                                    st.dataframe(pivot_res.style.format("{:,.0f}"), use_container_width=True)
+                                    
+                        except Exception as e:
+                            st.error(f"データ集計エラー: {e}")
+                    else:
+                        st.error("AIによる解析に失敗しました。もう少し具体的な指示をお願いします。")
+
 # --- 3. アップロードタブ (GCS統合) ---
+
 with tab_upload:
     st.subheader("📥 データファイルのアップロード")
     st.caption("ファイルサイズの制限なし — ブラウザからクラウドストレージへ直接送信されます。")

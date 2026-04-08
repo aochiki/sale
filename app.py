@@ -52,47 +52,46 @@ def fetch_rules(project_id):
 def clear_app_cache():
     st.cache_data.clear()
 
-# --- App Layout ---
-default_project_id = os.getenv('GOOGLE_CLOUD_PROJECT', st.session_state.get('project_id', ''))
 st.title("📊 売上データ管理システム")
 st.caption("Auto-Detect Upload & AI Aggregation")
 st.markdown("---")
 
-with st.expander("⚙️ システム設定", expanded=True):
-    # API キー入力欄 (最優先で表示)
-    api_key_input = st.text_input("Gemini API Key", value=st.session_state.get('gemini_api_key', ''), type="password")
-    
-    project_id_input = st.text_input("GCP Project ID", value=default_project_id).strip()
-    if project_id_input.startswith("http"):
-        st.error("⚠️ プロジェクトIDにURLが入力されているようです。'sales-aggregator-123' のようなIDを入力してください。")
-        # st.stop() は削除
-    
-    project_id = project_id_input
-    if project_id:
-        st.session_state['project_id'] = project_id
-        if api_key_input:
-            st.session_state['gemini_api_key'] = api_key_input
-        db_manager = get_db(project_id)
-        processor = SalesAggregator()
-    else:
-        st.info("💡 処理を開始するには GCP Project ID を入力してください。")
+# --- Initial State & Config ---
+project_id = os.getenv('GOOGLE_CLOUD_PROJECT', st.session_state.get('project_id', '')).strip()
+gemini_api_key = st.session_state.get('gemini_api_key', '')
+
+db_manager = None
+processor = SalesAggregator()
+rules = pd.DataFrame()
+raw_df = pd.DataFrame()
+mappings = pd.DataFrame()
+unified_df = pd.DataFrame()
+
+if project_id:
+    db_manager = get_db(project_id)
+    rules = fetch_rules(project_id)
 
 tab_view, tab_flexible, tab_ai, tab_upload, tab_settings = st.tabs([
     "📋 売上データ閲覧", "📊 自由集計", "🤖 AI集計", "📥 RAWデータ追加", "⚙️ システム管理"
 ])
 
 # --- 共通データの取得 ---
-raw_df = fetch_raw_data(project_id)
-mappings = fetch_mappings(project_id)
-rules = fetch_rules(project_id)
-unified_df = pd.DataFrame()
+if project_id:
+    db_manager = get_db(project_id)
+    raw_df = fetch_raw_data(project_id)
+    mappings = fetch_mappings(project_id)
+    rules = fetch_rules(project_id)
 
-if not raw_df.empty and not mappings.empty:
-    with st.status("🔄 データを動的に統合中...", expanded=False):
-        unified_df = processor.unify_raw_records(raw_df, mappings)
+    if not raw_df.empty and not mappings.empty:
+        with st.status("🔄 データを動的に統合中...", expanded=False):
+            unified_df = processor.unify_raw_records(raw_df, mappings)
 
 # --- 1. 閲覧タブ ---
 with tab_view:
+    if not project_id:
+        st.info("💡 「⚙️ システム管理」タブ（一番下）で GCP Project ID を設定してください。")
+        st.stop()
+    
     if raw_df.empty:
         st.info("データがありません。RAWデータをアップロードしてください。")
     elif unified_df.empty:
@@ -114,6 +113,10 @@ with tab_view:
 
 # --- 2. 自由集計タブ ---
 with tab_flexible:
+    if not project_id:
+        st.info("💡 「⚙️ システム管理」タブ（一番下）で GCP Project ID を設定してください。")
+        st.stop()
+        
     if unified_df.empty:
         st.info("集計可能なデータがありません。")
     else:
@@ -138,6 +141,10 @@ with tab_flexible:
 
 # --- 3. AI集計タブ ---
 with tab_ai:
+    if not project_id:
+        st.info("💡 「⚙️ システム管理」タブ（一番下）で GCP Project ID を設定してください。")
+        st.stop()
+
     if unified_df.empty:
         st.info("集計可能なデータがありません。")
     else:
@@ -212,6 +219,10 @@ with tab_ai:
 
 # --- 4. RAWデータ追加 (V3方式 復元版) ---
 with tab_upload:
+    if not project_id:
+        st.info("💡 「⚙️ システム管理」タブ（一番下）で GCP Project ID を設定してください。")
+        st.stop()
+        
     st.subheader("📥 大容量データのアップロード")
     st.caption("1. ファイルを枠内にドロップ ➔ 2. 送信完了後、下のボタンを押して登録")
 
@@ -405,6 +416,24 @@ with tab_settings:
             if r3.button("🗑️ 削除", key=f"dr_{idx}"):
                 db_manager.delete_parsing_rule(row['file_pattern'])
                 clear_app_cache(); st.rerun()
+
+    st.divider()
+    
+    # 接続設定を最下部に移動
+    st.markdown("#### 📡 接続・API設定")
+    with st.container(border=True):
+        new_project_id = st.text_input("GCP Project ID", value=project_id, help="例: sales-aggregator-123")
+        if new_project_id.startswith("http"):
+            st.error("⚠️ URLではなく、プロジェクトIDを入力してください。")
+        
+        new_api_key = st.text_input("Gemini API Key", value=gemini_api_key, type="password", help="AI解析に使用します。")
+        
+        if st.button("💾 設定を保存して反映"):
+            st.session_state.project_id = new_project_id.strip()
+            st.session_state.gemini_api_key = new_api_key.strip()
+            st.success("設定を保存しました。")
+            time.sleep(1)
+            st.rerun()
 
     st.divider()
     if st.button("💣 データベースを完全にリセットする", type="primary"):

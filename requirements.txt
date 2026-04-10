@@ -7,3 +7,4 @@ db-dtypes
 pyarrow
 google-cloud-aiplatform
 google-genai
+python-dotenv

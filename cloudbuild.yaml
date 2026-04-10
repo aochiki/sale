@@ -19,6 +19,10 @@ steps:
       - '--region'
       - 'asia-northeast1'   # 東京リージョン
       - '--allow-unauthenticated'
+      - '--set-env-vars'
+      - 'GEMINI_API_KEY=$_GEMINI_API_KEY'
+      - '--set-env-vars'
+      - 'GOOGLE_CLOUD_PROJECT=$PROJECT_ID'
 
 # 正常終了時にイメージを登録
 images:

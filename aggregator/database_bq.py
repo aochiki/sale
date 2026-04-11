@@ -378,7 +378,10 @@ class DatabaseManager:
                 logging.info(f"Metadata server detected SA: {sa_email}")
             except Exception as e:
                 # 最終的なフォールバック
-                sa_email = f"{self.project_id}@appspot.gserviceaccount.com"
+                if self.project_id == 'music-sales-project':
+                    sa_email = "32010787277-compute@developer.gserviceaccount.com"
+                else:
+                    sa_email = f"{self.project_id}@appspot.gserviceaccount.com"
                 logging.info(f"Fallback detected SA: {sa_email} (Reason: {e})")
         
         # 認証情報をリフレッシュ

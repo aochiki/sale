@@ -66,7 +66,7 @@ env_project_id = os.getenv('GOOGLE_CLOUD_PROJECT', '').strip()
 if env_project_id:
     st.session_state.project_id = env_project_id
 elif not st.session_state.get('project_id'):
-    st.session_state.project_id = 'nippo-app-491512' # 最後のリゾート
+    st.session_state.project_id = 'music-sales-project' # 最後のリゾート
 
 if 'gemini_api_key' not in st.session_state:
     st.session_state.gemini_api_key = os.getenv('GEMINI_API_KEY', '')

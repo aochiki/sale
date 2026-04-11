@@ -60,8 +60,14 @@ st.markdown("---")
 
 # --- Initial State & Config ---
 load_dotenv()
-if 'project_id' not in st.session_state:
-    st.session_state.project_id = os.getenv('GOOGLE_CLOUD_PROJECT', '').strip()
+env_project_id = os.getenv('GOOGLE_CLOUD_PROJECT', '').strip()
+
+# 環境変数が設定されている場合は、セッション情報よりも優先して強制同期する
+if env_project_id:
+    st.session_state.project_id = env_project_id
+elif 'project_id' not in st.session_state:
+    st.session_state.project_id = ''
+
 if 'gemini_api_key' not in st.session_state:
     st.session_state.gemini_api_key = os.getenv('GEMINI_API_KEY', '')
 

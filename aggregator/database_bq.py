@@ -371,13 +371,13 @@ class DatabaseManager:
                     "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email",
                     headers={"Metadata-Flavor": "Google"}
                 )
-                with urllib.request.urlopen(req, timeout=2) as response:
+                with urllib.request.urlopen(req, timeout=1) as response:
                     sa_email = response.read().decode("utf-8").strip()
             except Exception:
-                # 最終的なフォールバック（ここは環境に合わせて調整が必要）
-                # ユーザーの環境で存在しないSAを指定すると404エラーになるため警告を出す
-                logging.warning("Could not automatically detect service account email. Falling back to guess.")
-                sa_email = f"{self.project_id}@appspot.gserviceaccount.com" # Default App Engine/Cloud Run SA
+                # 最終的なフォールバック
+                # 注意: このフォールバック先が実際に存在しない場合は signBytes API が 404 を返します
+                sa_email = f"{self.project_id}@appspot.gserviceaccount.com"
+                logging.info(f"Using fallback SA email: {sa_email}")
         
         # 認証情報をリフレッシュ
         auth_request = auth_requests.Request()

@@ -77,9 +77,19 @@ class DatabaseManager:
     def save_unified_data(self, df, filename, overwrite=True, progress_callback=None):
         """フォーマット整形済みのDataFrameをそのまま統合テーブルに保存する"""
         table_id = f"{self.project_id}.{self.dataset_id}.unified_sales_data"
+        logging.info(f"Targeting BigQuery Table: {table_id}")
         
+        # テーブルが存在しない場合に備えて初期スキーマで作成を試みる
+        initial_schema = [
+            bigquery.SchemaField("FILE_NAME", "STRING"),
+            bigquery.SchemaField("SOURCE", "STRING"),
+            bigquery.SchemaField("uploaded_at", "TIMESTAMP"),
+        ]
+        self._ensure_table_exists(table_id, initial_schema)
+
         if overwrite:
             try:
+                logging.info(f"Deleting previous data for {filename} from {table_id}")
                 query = f"DELETE FROM `{table_id}` WHERE FILE_NAME = @f"
                 self.client.query(query, job_config=bigquery.QueryJobConfig(
                     query_parameters=[bigquery.ScalarQueryParameter("f", "STRING", filename)]
@@ -120,8 +130,11 @@ class DatabaseManager:
         )
         try:
             with open(tmp_path, 'rb') as source_file:
-                self.client.load_table_from_file(source_file, table_id, job_config=job_config, location="asia-northeast1").result()
-            logging.info(f"Successfully saved {len(df)} rows for UNIFIED data: {filename}")
+                # location をデータセットに合わせて asia-northeast1 に固定
+                job = self.client.load_table_from_file(source_file, table_id, job_config=job_config, location="asia-northeast1")
+                job.result() # 完了まで待機
+                
+            logging.info(f"Successfully saved {len(df)} rows for UNIFIED data: {filename} to {table_id}")
             return len(df)
         except Exception as e:
             logging.error(f"Failed to save UNIFIED data: {e}")

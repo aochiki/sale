@@ -411,8 +411,9 @@ with tab_settings:
     st.divider()
     with st.expander("🔍 診断情報 (デバッグ用)"):
         st.write(f"**実行プロジェクトID:** `{project_id}`")
-        st.write(f"**環境変数 (GOOGLE_CLOUD_PROJECT):** `{os.getenv('GOOGLE_CLOUD_PROJECT')}`")
-        st.write(f"**Version:** `v13.3` (Diagnostic)")
+        st.write(f"**ターゲットテーブル:** `unified_sales_data` (in `{project_id}.sales_aggregator_dataset`)")
+        st.write(f"**環境変数 (GOOGLE_CLOUD_PROJECT):** `{os.getenv('GOOGLE_CLOUD_PROJECT', 'None')}`")
+        st.caption(f"**Version:** v13.7 (Full Table Recovery)")
         if st.button("🔄 セッション状態を完全にリセット"):
             st.session_state.clear()
             st.rerun()

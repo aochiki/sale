@@ -339,6 +339,7 @@ class DatabaseManager:
 
             run_load_job()
             notify(f"✅ {filename} のロードが完了しました。")
+            return row_idx_offset
 
         finally:
             if os.path.exists(ndjson_path):

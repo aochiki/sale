@@ -346,10 +346,11 @@ with tab_upload:
                     df = formatter.format_file(blob_io, detected_fn)
                     
                     if df is not None and not df.empty:
-                        db_manager.save_unified_data(df, detected_fn, overwrite=True)
+                        row_count = db_manager.save_unified_data(df, detected_fn, overwrite=True)
                         db_manager.delete_gcs_file(temp_data_path)
                         db_manager.delete_gcs_file(temp_tag_path)
-                        stat.update(label=f"✅ {detected_fn} を登録しました", state="complete")
+                        stat.update(label=f"✅ {detected_fn} ({row_count:,} 件) の登録が完了しました", state="complete")
+                        st.success(f"✅ {detected_fn} ({row_count:,} 件) をデータベースへ登録しました。")
                         clear_app_cache()
                         time.sleep(1); st.rerun()
                     else: stat.update(label="❌ 解析・整形失敗", state="error")

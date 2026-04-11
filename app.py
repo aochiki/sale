@@ -179,14 +179,7 @@ with tab_ai:
         st.subheader("🤖 AI集計")
         st.caption("「かりゆし58の曲ごとの売上を表示」など。")
         
-        date_col = next((m['unified_name'] for _, m in mappings.iterrows() if m['is_date']), None)
         flex_df_ai = unified_df.copy()
-        if date_col:
-            months = sorted(flex_df_ai[date_col].dropna().unique().tolist())
-            c1, c2 = st.columns(2)
-            start_m_ai = c1.selectbox("🚩 開始月", months, index=0, key="ai_start")
-            end_m_ai = c2.selectbox("🏁 終了月", months, index=len(months)-1, key="ai_end")
-            flex_df_ai = flex_df_ai[(flex_df_ai[date_col] >= start_m_ai) & (flex_df_ai[date_col] <= end_m_ai)].copy()
 
         user_query = st.text_area("📊 集計の要望を入力", placeholder="「アーティストごとの売上合計」など...", help="具体的な項目名を含めると精度が上がります")
         
@@ -416,7 +409,7 @@ with tab_settings:
         masked_key = f"{current_key[:4]}...{current_key[-4:]}" if len(current_key) > 8 else "未設定"
         st.write(f"**Gemini API Key:** `{masked_key}`")
         
-        st.caption(f"**Version:** v13.8 (AI UI Revert & Diagnostic)")
+        st.caption(f"**Version:** v13.9 (AI UI Simplified)")
         if st.button("🔄 セッション状態を完全にリセット"):
             st.session_state.clear()
             st.rerun()

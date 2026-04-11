@@ -263,90 +263,68 @@ with tab_upload:
     st.subheader("📥 売上データのアップロード")
     st.caption("ファイルをアップロードして共通フォーマットへ自動整形・登録します。")
 
-    # --- Standard Uploader (Primary/Stable) ---
-    uploaded_file = st.file_uploader("ファイルを選択してください (CSV/TSV/Apple Musicレポート)", type=["csv", "tsv", "txt"])
-    if uploaded_file:
-        if st.button("🚀 登録を開始する", type="primary", use_container_width=True):
-            with st.status("⌛ 整形・保存中...") as stat:
-                try:
-                    formatter = DataFormatter(mappings)
-                    df = formatter.format_file(uploaded_file, uploaded_file.name)
-                    if df is not None and not df.empty:
-                        db_manager.save_unified_data(df, uploaded_file.name, overwrite=True)
-                        stat.update(label=f"✅ {uploaded_file.name} を登録しました", state="complete")
-                        clear_app_cache()
-                        time.sleep(1); st.rerun()
-                    else:
-                        stat.update(label="❌ 解析失敗。フォーマットを確認してください。", state="error")
-                except Exception as e:
-                    st.error(f"処理中にエラーが発生しました: {e}")
-    
-    st.divider()
+    # --- DropZone Uploader (Rich UI / Signed-URL flow) ---
+    if '_up_uuid' not in st.session_state:
+        st.session_state._up_uuid = uuid.uuid4().hex[:8]
+    uid = st.session_state._up_uuid
+    temp_data_path = f"up_data_{uid}.bin"
+    temp_tag_path = f"up_tag_{uid}.txt"
 
-    # --- Large File Uploader (Advanced/Signed-URL flow) ---
-    with st.expander("🐘 大容量ファイル(100MB〜1GB以上)のアップロード用 (設定が必要)", expanded=False):
-        st.info("※ブラウザから直接GCSへ高速アップロードします。ローカル環境では権限エラーになる場合があります。")
-        if '_up_uuid' not in st.session_state:
-            st.session_state._up_uuid = uuid.uuid4().hex[:8]
-        uid = st.session_state._up_uuid
-        temp_data_path = f"up_data_{uid}.bin"
-        temp_tag_path = f"up_tag_{uid}.txt"
+    try:
+        data_signed_url = db_manager.get_gcs_signed_url(temp_data_path)
+        tag_signed_url = db_manager.get_gcs_signed_url(temp_tag_path)
 
-        try:
-            data_signed_url = db_manager.get_gcs_signed_url(temp_data_path)
-            tag_signed_url = db_manager.get_gcs_signed_url(temp_tag_path)
-
-            upload_html = f"""
-            <div id="drop-zone" style="border:2px dashed #94a3b8; border-radius:12px; background:#f8fafc; padding:35px; text-align:center; cursor:pointer; transition: 0.3s;">
-                <div id="status" style="font-weight:600; color:#475569; font-family:sans-serif;">ここにファイルをドロップ</div>
-                <div id="bar-wrap" style="display:none; margin:15px auto; width:80%; background:#e2e8f0; height:8px; border-radius:4px; overflow:hidden;">
-                    <div id="bar" style="width:0%; height:100%; background:#3b82f6; transition:width .2s;"></div>
-                </div>
-                <div id="hint" style="font-size:0.8rem; color:#94a3b8; margin-top:10px; font-family:sans-serif;">(自動でファイル名を認識します)</div>
-                <input type="file" id="file-in" style="display:none;" autocomplete="off">
+        upload_html = f"""
+        <div id="drop-zone" style="border:2px dashed #94a3b8; border-radius:12px; background:#f8fafc; padding:45px; text-align:center; cursor:pointer; transition: 0.3s; transform: scale(1);">
+            <div id="status" style="font-weight:600; color:#475569; font-size:1.1rem; font-family:sans-serif;">ここにファイルをドロップ、またはクリックして選択</div>
+            <div id="bar-wrap" style="display:none; margin:20px auto; width:85%; background:#e2e8f0; height:10px; border-radius:5px; overflow:hidden;">
+                <div id="bar" style="width:0%; height:100%; background:linear-gradient(90deg, #3b82f6, #60a5fa); transition:width .2s;"></div>
             </div>
-            <script>
-            const zone=document.getElementById('drop-zone'), input=document.getElementById('file-in'),
-                  status=document.getElementById('status'), bar=document.getElementById('bar'), wrap=document.getElementById('bar-wrap');
-            zone.onclick=()=>input.click();
-            input.onchange=()=>{{ if(input.files[0]) upload(input.files[0]); }};
-            zone.ondragover=e=>{{ e.preventDefault(); zone.style.background='#eff6ff'; zone.style.borderColor='#3b82f6'; }};
-            zone.ondragleave=()=>{{ zone.style.background='#f8fafc'; zone.style.borderColor='#94a3b8'; }};
-            zone.ondrop=e=>{{ e.preventDefault(); if(e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); }};
+            <div id="hint" style="font-size:0.9rem; color:#94a3b8; margin-top:15px; font-family:sans-serif;">(Apple Music, NexTone, Orchardのレポートに対応)</div>
+            <input type="file" id="file-in" style="display:none;" autocomplete="off">
+        </div>
+        <script>
+        const zone=document.getElementById('drop-zone'), input=document.getElementById('file-in'),
+              status=document.getElementById('status'), bar=document.getElementById('bar'), wrap=document.getElementById('bar-wrap');
+        zone.onclick=()=>input.click();
+        input.onchange=()=>{{ if(input.files[0]) upload(input.files[0]); }};
+        zone.ondragover=e=>{{ e.preventDefault(); zone.style.background='#eff6ff'; zone.style.borderColor='#3b82f6'; zone.style.transform='scale(1.01)'; }};
+        zone.ondragleave=()=>{{ zone.style.background='#f8fafc'; zone.style.borderColor='#94a3b8'; zone.style.transform='scale(1)'; }};
+        zone.ondrop=e=>{{ e.preventDefault(); zone.style.transform='scale(1)'; if(e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); }};
 
-            async function upload(file) {{
-                status.innerText = file.name + ' を送信中...';
-                wrap.style.display='block';
-                const xhr=new XMLHttpRequest();
-                xhr.open('PUT', '${data_signed_url}');
-                xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-                xhr.upload.onprogress=e=>{{
-                    const p=Math.round(e.loaded/e.total*100);
-                    bar.style.width=p+'%';
-                }};
-                xhr.onload=async ()=>{{
-                    if(xhr.status===200) {{
-                        status.innerText = '本体完了。ファイル名を記録中...';
-                        const tagXhr = new XMLHttpRequest();
-                        tagXhr.open('PUT', '${tag_signed_url}');
-                        tagXhr.setRequestHeader('Content-Type', 'application/octet-stream');
-                        tagXhr.onload = () => {{
-                            if (tagXhr.status === 200) {{
-                                status.innerText = '✅ 送信完了！「' + file.name + '」の登録準備完了';
-                                wrap.style.display='none';
-                            }}
-                        }};
-                        tagXhr.send(file.name);
-                    }} else {{ status.innerText='送信エラー: ' + xhr.status; }}
-                }};
-                xhr.send(file);
-            }}
-            </script>
-            """
-            components.html(upload_html, height=200)
-        except Exception as e:
-            st.warning(f"大容量アップローダーは現在利用できません (権限設定が必要です)")
-            logging.error(f"Signed URL Error: {e}")
+        async function upload(file) {{
+            status.innerText = file.name + ' を送信中...';
+            wrap.style.display='block';
+            const xhr=new XMLHttpRequest();
+            xhr.open('PUT', '{data_signed_url}');
+            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+            xhr.upload.onprogress=e=>{{
+                const p=Math.round(e.loaded/e.total*100);
+                bar.style.width=p+'%';
+            }};
+            xhr.onload=async ()=>{{
+                if(xhr.status===200) {{
+                    status.innerText = '本体完了。ファイル名を記録中...';
+                    const tagXhr = new XMLHttpRequest();
+                    tagXhr.open('PUT', '{tag_signed_url}');
+                    tagXhr.setRequestHeader('Content-Type', 'application/octet-stream');
+                    tagXhr.onload = () => {{
+                        if (tagXhr.status === 200) {{
+                            status.innerText = '✅ 送信完了！「' + file.name + '」の登録準備完了';
+                            wrap.style.display='none';
+                        }}
+                    }};
+                    tagXhr.send(file.name);
+                }} else {{ status.innerText='送信エラー: ' + xhr.status; }}
+            }};
+            xhr.send(file);
+        }}
+        </script>
+        """
+        components.html(upload_html, height=220)
+    except Exception as e:
+        st.error(f"アップローダーの初期化に失敗しました: {e}")
+        logging.error(f"Signed URL Error: {e}")
 
     if st.button("🚀 BigQueryへの登録を開始する", type="primary", use_container_width=True):
         with st.status("⌛ 処理中...") as stat:

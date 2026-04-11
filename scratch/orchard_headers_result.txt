@@ -1,0 +1,25 @@
+--- Orchard Data Sample ---
+{
+  "SOURCE": "ORCHARD",
+  "備考": " {\"﻿\\\"STATEMENT PERIOD\\\"\": \"26-Feb\", \"ACCOUNT ID\": \"34899\", \"ACCOUNT NAME\": \"LD&K, Inc. \", \"CONTRACT ID\": \"333412\", \"TRANSACTION DATE\": \"2026/1/31\", \"SALE COUNTRY\": \"Mexico\", \"STORE\": \"Spotify\", \"LABEL IMPRINT\": \"TRUST RECORDS/LIVING,DINING&KITCHEN RECORDS\", \"PRODUCT ARTIST\": \"バウンダリー\", \"PRODUCT\": \"Ashiato\", \"PRODUCT VERSION\": \"海外用\", \"PRODUCT CODE\": \"TRLD-1008G\", \"DISPLAY UPC\": \"197189000000.0\", \"TRACK ARTIST\": \"Boundary\", \"TRACK\": \"Kurayami\", \"ISRC\": \"JPA962300176\", \"TRANSACTION TYPE\": \"Subscription Audio Streams\", \"UNIT PRICE SALE CURRENCY\": \"0.001855\", \"QUANTITY\": \"6\", \"GROSS REVENUE SALE CURRENCY\": \"0.011128\", \"SALE CURRENCY\": \"USD\", \"CURRENCY CONVERSION RATE\": \"155.109497\", \"GROSS REVENUE ACCOUNT CURRENCY\": \"1.726001\", \"ACCOUNT CURRENCY\": \"JPY\", \"ACCOUNT SHARE\": \"0.82\", \"NET SHARE ACCOUNT CURRENCY\": \"1.415321\", \"PHYSICAL PPD USD\": \"0\", \"ROYALTY TYPE\": \"royalty\", \"ORIGINAL STATEMENT PERIOD\": \"26-Feb\"}",
+  "販売種別": "",
+  "空間オーディオ判定": "",
+  "uploaded_at": "2026-04-11 11:35:17.580931+00:00",
+  "印税額": 0.0,
+  "数量": 0.0,
+  "コース_プラン名": "",
+  "通貨": "",
+  "アルバム名": "",
+  "配信サービス名": "",
+  "FILE_NAME": "Orchard202602_LD_K__Inc___333412_February_2026_revenue_details_2.csv",
+  "UPC_EAN": "",
+  "ベンダー識別子": "",
+  "ISRC": "",
+  "利用発生月": "None",
+  "国コード": "",
+  "オフライン再生フラグ": "",
+  "楽曲名": "",
+  "売上確定日": "None",
+  "アーティスト名": "",
+  "レーベル名": ""
+}

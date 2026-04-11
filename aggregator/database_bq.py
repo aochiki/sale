@@ -11,14 +11,42 @@ import os
 import tempfile
 
 class DatabaseManager:
-    # RAW テーブルのスキーマ定義（一元管理）
-    RAW_SCHEMA = [
-        bigquery.SchemaField("filename", "STRING"),
-        bigquery.SchemaField("source_type", "STRING"),
-        bigquery.SchemaField("row_index", "INTEGER"),
-        bigquery.SchemaField("raw_row_json", "STRING"),
-        bigquery.SchemaField("uploaded_at", "TIMESTAMP"),
+    # デフォルトのマッピング設定（消失時の自動復旧用）
+    DEFAULT_MAPPINGS = [
+        {"unified_name": "売上確定日", "orchard_col": "STATEMENT PERIOD", "nextone_col": "分配月", "itunes_col": "End Date", "is_date": True, "is_numeric": False},
+        {"unified_name": "利用発生月", "orchard_col": "TRANSACTION DATE", "nextone_col": "利用月", "itunes_col": "End Date", "is_date": True, "is_numeric": False},
+        {"unified_name": "アーティスト名", "orchard_col": "PRODUCT ARTIST", "nextone_col": "アーティスト名", "itunes_col": "Artist", "is_date": False, "is_numeric": False},
+        {"unified_name": "楽曲名", "orchard_col": "TRACK", "nextone_col": "楽曲名", "itunes_col": "Content Title", "is_date": False, "is_numeric": False},
+        {"unified_name": "アルバム名", "orchard_col": "PRODUCT", "nextone_col": "アルバム名", "itunes_col": "Product", "is_date": False, "is_numeric": False},
+        {"unified_name": "ISRC", "orchard_col": "ISRC", "nextone_col": "ISRC", "itunes_col": "ISRC", "is_date": False, "is_numeric": False},
+        {"unified_name": "UPC_EAN", "orchard_col": "DISPLAY UPC", "nextone_col": "UPC", "itunes_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "ベンダー識別子", "orchard_col": "PRODUCT CODE", "nextone_col": "商品番号", "itunes_col": "Vendor Identifier", "is_date": False, "is_numeric": False},
+        {"unified_name": "原盤アルバムコード", "orchard_col": "", "nextone_col": "原盤/アルバムコード", "itunes_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "アカウントID", "orchard_col": "ACCOUNT ID", "nextone_col": "", "itunes_col": "Apple Identifier", "is_date": False, "is_numeric": False},
+        {"unified_name": "YouTube動画ID", "orchard_col": "YOUTUBE VIDEO ID", "nextone_col": "", "itunes_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "配信サービス名", "orchard_col": "STORE", "nextone_col": "DSP名", "itunes_col": "Report Type", "is_date": False, "is_numeric": False},
+        {"unified_name": "サービス詳細", "orchard_col": "SERVICE DETAIL", "nextone_col": "サービス名", "itunes_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "国コード", "orchard_col": "SALE COUNTRY", "nextone_col": "国", "itunes_col": "Storefront Name", "is_date": False, "is_numeric": False},
+        {"unified_name": "レーベル名", "orchard_col": "LABEL IMPRINT", "nextone_col": "レーベル名", "itunes_col": "Label/Studio/Network", "is_date": False, "is_numeric": False},
+        {"unified_name": "数量", "orchard_col": "QUANTITY", "nextone_col": "数量", "itunes_col": "Total  Royalty Bearing Plays", "is_date": False, "is_numeric": True},
+        {"unified_name": "印税額", "orchard_col": "NET SHARE ACCOUNT CURRENCY", "nextone_col": "総支払額", "itunes_col": "Net Royalty Total", "is_date": False, "is_numeric": True},
+        {"unified_name": "売上総額", "orchard_col": "GROSS REVENUE ACCOUNT CURRENCY", "nextone_col": "使用料合計", "itunes_col": "", "is_date": False, "is_numeric": True},
+        {"unified_name": "通貨", "orchard_col": "ACCOUNT CURRENCY", "nextone_col": "", "itunes_col": "Currency", "is_date": False, "is_numeric": False},
+        {"unified_name": "為替レート", "orchard_col": "CURRENCY CONVERSION RATE", "nextone_col": "", "itunes_col": "", "is_date": False, "is_numeric": True},
+        {"unified_name": "アルバムバージョン", "orchard_col": "PRODUCT VERSION", "nextone_col": "", "itunes_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "楽曲バージョン", "orchard_col": "TRACK VERSION", "nextone_col": "", "itunes_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "トラックアーティスト", "orchard_col": "TRACK ARTIST", "nextone_col": "", "itunes_col": "Artist", "is_date": False, "is_numeric": False},
+        {"unified_name": "空間オーディオ判定", "orchard_col": "", "nextone_col": "", "itunes_col": "Spatial Availability Indicator", "is_date": False, "is_numeric": False},
+        {"unified_name": "オフライン再生フラグ", "orchard_col": "", "nextone_col": "", "itunes_col": "Offline Indicator", "is_date": False, "is_numeric": False},
+        {"unified_name": "販売種別", "orchard_col": "TRANSACTION TYPE", "nextone_col": "販売種別", "itunes_col": "Media Type", "is_date": False, "is_numeric": False},
+        {"unified_name": "販売種別詳細", "orchard_col": "TRANSACTION SUBTYPE", "nextone_col": "", "itunes_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "配信区分", "orchard_col": "", "nextone_col": "配信区分", "itunes_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "サービスタイプ", "orchard_col": "", "nextone_col": "サービスタイプ", "itunes_col": "", "is_date": False, "is_numeric": False},
     ]
+
+    # 統合テーブルは動的スキーマ(またはpandasから自動生成)を許容する方針とします
+    # 基本構成として常に存在が期待されるものを定義しておくことも可能ですが、
+    # マッピング変更に柔軟に対応するため autodetect に任せます。
 
     def __init__(self, project_id, dataset_id):
         self.project_id = project_id
@@ -39,44 +67,43 @@ class DatabaseManager:
             self.client.create_dataset(dataset)
 
     def reset_dataset(self):
-        """データセット内のすべてのテーブルを削除して完全に初期化する"""
-        tables = self.client.list_tables(f"{self.project_id}.{self.dataset_id}")
-        for table in tables:
-            self.client.delete_table(table.reference, not_found_ok=True)
-        logging.info("Dataset reset complete.")
+        """売上データテーブルのみを削除して初期化する（マッピング設定は維持）"""
+        target_tables = ["unified_sales_data"]
+        for t_name in target_tables:
+            table_id = f"{self.project_id}.{self.dataset_id}.{t_name}"
+            self.client.delete_table(table_id, not_found_ok=True)
+            logging.info(f"Table {table_id} deleted (reset).")
 
-    def save_raw_data(self, df, filename, source_type, overwrite=True, progress_callback=None):
-        """解析なしで、各行を個別のJSON行として RAW テーブルに保存する"""
-        table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
-        
-        self._ensure_table_exists(table_id, self.RAW_SCHEMA)
+    def save_unified_data(self, df, filename, overwrite=True, progress_callback=None):
+        """フォーマット整形済みのDataFrameをそのまま統合テーブルに保存する"""
+        table_id = f"{self.project_id}.{self.dataset_id}.unified_sales_data"
         
         if overwrite:
-            query = f"DELETE FROM `{table_id}` WHERE filename = @f"
-            self.client.query(query, job_config=bigquery.QueryJobConfig(
-                query_parameters=[bigquery.ScalarQueryParameter("f", "STRING", filename)]
-            )).result()
+            try:
+                query = f"DELETE FROM `{table_id}` WHERE FILE_NAME = @f"
+                self.client.query(query, job_config=bigquery.QueryJobConfig(
+                    query_parameters=[bigquery.ScalarQueryParameter("f", "STRING", filename)]
+                )).result()
+            except exceptions.NotFound:
+                pass # テーブル未作成の場合はスキップ
 
         import tempfile
         import os
 
         total_rows = len(df)
+        df = df.copy()
+        
+        # BigQueryで扱えるようにdatetime型へ
+        now = datetime.datetime.now().isoformat()
+        df['uploaded_at'] = now
+        
+        # BigQueryの列名ルール（英数字とアンダースコア）に厳格に合わせる場合もありますが、
+        # 近年のBQは柔軟なためそのまま送信を試みます。
+
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json', encoding='utf-8') as tmp:
-            now = datetime.datetime.now().isoformat()
-            for i, row in df.iterrows():
-                line = {
-                    'filename': filename,
-                    'source_type': source_type,
-                    'row_index': i,
-                    'raw_row_json': json.dumps(row.to_dict(), ensure_ascii=False),
-                    'uploaded_at': now
-                }
-                tmp.write(json.dumps(line, ensure_ascii=False) + '\n')
-                
-                # 5000行ごとに進捗を表示
-                if progress_callback and (i + 1) % 5000 == 0:
-                    progress_callback(f"📊 変換中: {i+1:,} / {total_rows:,} 件を処理済み...")
-                    
+            # ndjson出力時にpandasのto_jsonを使用
+            # 日付などはそのまま文字列として扱う
+            df.to_json(tmp.name, orient='records', lines=True, force_ascii=False)
             tmp_path = tmp.name
 
         if progress_callback:
@@ -85,105 +112,74 @@ class DatabaseManager:
         job_config = bigquery.LoadJobConfig(
             write_disposition="WRITE_APPEND",
             source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-            schema=self.RAW_SCHEMA
+            autodetect=True,
+            schema_update_options=[
+                bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION,
+                bigquery.SchemaUpdateOption.ALLOW_FIELD_RELAXATION
+            ]
         )
         try:
             with open(tmp_path, 'rb') as source_file:
                 self.client.load_table_from_file(source_file, table_id, job_config=job_config, location="asia-northeast1").result()
-            logging.info(f"Successfully saved {len(df)} rows for RAW data (streamed): {filename}")
+            logging.info(f"Successfully saved {len(df)} rows for UNIFIED data: {filename}")
             return len(df)
         except Exception as e:
-            logging.error(f"Failed to save RAW individual data: {e}")
+            logging.error(f"Failed to save UNIFIED data: {e}")
             raise
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
-    def delete_raw_data(self, filename):
-        """特定のファイルに関連する RAW データをすべて削除する"""
-        table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
-        query = f"DELETE FROM `{table_id}` WHERE filename = @f"
+    def delete_unified_data(self, filename):
+        """特定のファイルに関連する統合データをすべて削除する"""
+        table_id = f"{self.project_id}.{self.dataset_id}.unified_sales_data"
+        query = f"DELETE FROM `{table_id}` WHERE FILE_NAME = @f"
         try:
             query_job = self.client.query(query, job_config=bigquery.QueryJobConfig(
                 query_parameters=[bigquery.ScalarQueryParameter("f", "STRING", filename)]
             ))
             query_job.result()
-            logging.info(f"Successfully deleted raw data for file: {filename}")
+            logging.info(f"Successfully deleted unified data for file: {filename}")
             return True
         except Exception as e:
-            logging.error(f"Failed to delete raw data for {filename}: {e}")
+            logging.error(f"Failed to delete unified data for {filename}: {e}")
             return False
 
     def check_file_exists(self, filename):
-        """特定のファイル名が既に登録されているか確認する（前後スペースを無視）"""
-        if not filename:
-            return False
+        if not filename: return False
         fn = filename.strip()
-        table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
-        query = f"SELECT count(*) as cnt FROM `{table_id}` WHERE filename = @f"
+        table_id = f"{self.project_id}.{self.dataset_id}.unified_sales_data"
+        query = f"SELECT count(*) as cnt FROM `{table_id}` WHERE FILE_NAME = @f"
         try:
             results = self.client.query(query, job_config=bigquery.QueryJobConfig(
                 query_parameters=[bigquery.ScalarQueryParameter("f", "STRING", fn)]
             )).result()
-            for row in results:
-                return row.cnt > 0
-        except Exception as e:
-            logging.error(f"Duplicate check failed: {e}")
+            for row in results: return row.cnt > 0
+        except Exception:
             pass
         return False
 
     def get_file_history(self):
         """アップロード済みのファイル一覧を全件取得する（軽量クエリ）"""
-        table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
+        table_id = f"{self.project_id}.{self.dataset_id}.unified_sales_data"
         try:
-            query = f"SELECT filename, source_type, max(uploaded_at) as uploaded_at FROM `{table_id}` GROUP BY filename, source_type ORDER BY uploaded_at DESC"
+            query = f"SELECT FILE_NAME as filename, SOURCE as source_type, COUNT(*) as row_count, max(uploaded_at) as uploaded_at FROM `{table_id}` GROUP BY FILE_NAME, SOURCE ORDER BY uploaded_at DESC"
             return self.client.query(query).to_dataframe()
         except exceptions.NotFound:
             return pd.DataFrame()
 
-    def get_raw_data(self, limit=2000):
-        """保存されている RAW データを取得する（プレビュー用）"""
-        table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
+    def get_unified_data(self, limit=2000):
+        """保存されている統合データを取得する"""
+        table_id = f"{self.project_id}.{self.dataset_id}.unified_sales_data"
         try:
-            # 最新のアップロードを優先し、行順序を維持して取得
-            query = f"SELECT * FROM `{table_id}` ORDER BY uploaded_at DESC, filename, row_index"
+            query = f"SELECT * FROM `{table_id}` ORDER BY uploaded_at DESC, FILE_NAME"
             if limit:
                 query += f" LIMIT {limit}"
-            return self.client.query(query).to_dataframe()
+            df = self.client.query(query).to_dataframe()
+            # Restore SOURCE since it replaced source_type
+            return df
         except exceptions.NotFound:
             return pd.DataFrame()
-
-    def get_unique_headers(self, source_type):
-        """RAWデータから、特定の提供元が持つ実際の列名リストを抽出する"""
-        table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
-        # 1行だけ取得してヘッダーを特定する
-        query = f"SELECT raw_row_json FROM `{table_id}` WHERE source_type = @st LIMIT 1"
-        try:
-            results = self.client.query(query, job_config=bigquery.QueryJobConfig(
-                query_parameters=[bigquery.ScalarQueryParameter("st", "STRING", source_type)]
-            )).result()
-            for row in results:
-                data = json.loads(row.raw_row_json)
-                return sorted(list(data.keys()))
-        except (exceptions.NotFound, StopIteration):
-            pass
-        return []
-
-    def get_headers_by_pattern(self, pattern):
-        """特定のファイル名パターンに一致する最新のデータから列名を抽出する"""
-        table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
-        # 最新の1件からJSON内のキーを取得
-        query = f"SELECT raw_row_json FROM `{table_id}` WHERE filename LIKE @p ORDER BY uploaded_at DESC LIMIT 1"
-        try:
-            results = self.client.query(query, job_config=bigquery.QueryJobConfig(
-                query_parameters=[bigquery.ScalarQueryParameter("p", "STRING", pattern)]
-            )).result()
-            for row in results:
-                data = json.loads(row.raw_row_json)
-                return sorted(list(data.keys()))
-        except Exception:
-            pass
-        return []
 
     def _ensure_table_exists(self, table_id, schema):
         """テーブルが存在しなければ作成する"""
@@ -227,9 +223,9 @@ class DatabaseManager:
         except exceptions.NotFound:
             pass
 
-    def save_unified_column(self, unified_name, orchard_col, nextone_col, itunes_col, is_date, is_numeric):
+    def save_unified_columns_batch(self, df):
+        """マッピング辞書全体を一括で保存する（画面から編集されたものを上書き）"""
         table_id = f"{self.project_id}.{self.dataset_id}.unified_columns"
-        # スキーマを明示して作成を確実にする
         schema = [
             bigquery.SchemaField("unified_name", "STRING"),
             bigquery.SchemaField("orchard_col", "STRING"),
@@ -239,28 +235,28 @@ class DatabaseManager:
             bigquery.SchemaField("is_numeric", "BOOLEAN"),
         ]
         self._ensure_table_exists(table_id, schema)
-
-        # 既存あれば削除
-        self.delete_unified_column(unified_name)
-        df = pd.DataFrame([{
-            'unified_name': unified_name,
-            'orchard_col': orchard_col,
-            'nextone_col': nextone_col,
-            'itunes_col': itunes_col,
-            'is_date': is_date,
-            'is_numeric': is_numeric
-        }])
-        job_config = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND")
-        # リージョンを明示
-        self.client.load_table_from_dataframe(df, table_id, job_config=job_config, location="asia-northeast1").result()
-        logging.info(f"Saved unified column: {unified_name}")
+        
+        # テーブルを一度空にする
+        self.client.query(f"DELETE FROM `{table_id}` WHERE true").result()
+        if not df.empty:
+            job_config = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND", schema=schema)
+            self.client.load_table_from_dataframe(df, table_id, job_config=job_config, location="asia-northeast1").result()
+            logging.info(f"Saved mapping columns in batch: {len(df)} rows")
 
     def get_unified_columns(self):
+        """マッピング設定を取得する（空の場合はデフォルトを読み込む）"""
         table_id = f"{self.project_id}.{self.dataset_id}.unified_columns"
         try:
-            return self.client.query(f"SELECT * FROM `{table_id}`").to_dataframe()
+            df = self.client.query(f"SELECT * FROM `{table_id}`").to_dataframe()
+            if df.empty:
+                logging.info("Mapping table is empty. Restoring defaults...")
+                self.save_unified_columns_batch(pd.DataFrame(self.DEFAULT_MAPPINGS))
+                return pd.DataFrame(self.DEFAULT_MAPPINGS)
+            return df
         except exceptions.NotFound:
-            return pd.DataFrame()
+            logging.info("Mapping table not found. Creating with defaults...")
+            self.save_unified_columns_batch(pd.DataFrame(self.DEFAULT_MAPPINGS))
+            return pd.DataFrame(self.DEFAULT_MAPPINGS)
 
     def delete_unified_column(self, name):
         table_id = f"{self.project_id}.{self.dataset_id}.unified_columns"
@@ -378,8 +374,10 @@ class DatabaseManager:
                 with urllib.request.urlopen(req, timeout=2) as response:
                     sa_email = response.read().decode("utf-8").strip()
             except Exception:
-                # 取得失敗時は以前のフォールバックを使用 (プロジェクト設定に依存)
-                sa_email = f"bigquery-data-manager@{self.project_id}.iam.gserviceaccount.com"
+                # 最終的なフォールバック（ここは環境に合わせて調整が必要）
+                # ユーザーの環境で存在しないSAを指定すると404エラーになるため警告を出す
+                logging.warning("Could not automatically detect service account email. Falling back to guess.")
+                sa_email = f"{self.project_id}@appspot.gserviceaccount.com" # Default App Engine/Cloud Run SA
         
         # 認証情報をリフレッシュ
         auth_request = auth_requests.Request()
@@ -438,22 +436,4 @@ class DatabaseManager:
         except Exception as e:
             logging.error(f"Failed to rename GCS file {old_name} -> {new_name}: {e}")
             return False
-    def get_file_history(self):
-        """取り込み済みファイルの一覧を、件数と最新日時付きで取得する"""
-        table_id = f"{self.project_id}.{self.dataset_id}.raw_sales_data_v2"
-        query = f"""
-            SELECT 
-                filename, 
-                COUNT(*) as row_count, 
-                MAX(uploaded_at) as uploaded_at
-            FROM `{table_id}`
-            GROUP BY filename
-            ORDER BY uploaded_at DESC
-        """
-        try:
-            return self.client.query(query).to_dataframe()
-        except exceptions.NotFound:
-            return pd.DataFrame()
-        except Exception as e:
-            logging.error(f"Failed to fetch file history: {e}")
-            return pd.DataFrame()
+    # get_file_history が重複していたので削除

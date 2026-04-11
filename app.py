@@ -1,7 +1,7 @@
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
-from aggregator.processor import SalesAggregator
+from aggregator.formatter import DataFormatter
 from aggregator.database_bq import DatabaseManager
 from aggregator.ai_query import parse_natural_language_query
 import io
@@ -39,19 +39,20 @@ def get_db(project_id):
     return DatabaseManager(project_id=project_id, dataset_id=dataset_id)
 
 @st.cache_data(ttl=300)
-def fetch_raw_data(project_id):
-    return get_db(project_id).get_raw_data()
+def fetch_unified_data(project_id):
+    return get_db(project_id).get_unified_data()
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=60)
 def fetch_mappings(project_id):
     return get_db(project_id).get_unified_columns()
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=60)
 def fetch_rules(project_id):
     return get_db(project_id).get_parsing_rules()
 
 def clear_app_cache():
     st.cache_data.clear()
+    st.cache_resource.clear()
 
 st.title("📊 売上データ管理システム")
 st.caption("Auto-Detect Upload & AI Aggregation")
@@ -68,9 +69,8 @@ project_id = st.session_state.project_id
 gemini_api_key = st.session_state.gemini_api_key
 
 db_manager = None
-processor = SalesAggregator()
+processor = None # Unused now
 rules = pd.DataFrame()
-raw_df = pd.DataFrame()
 mappings = pd.DataFrame()
 unified_df = pd.DataFrame()
 
@@ -85,13 +85,30 @@ tab_view, tab_flexible, tab_ai, tab_upload, tab_settings = st.tabs([
 # --- 共通データの取得 ---
 if project_id:
     db_manager = get_db(project_id)
-    raw_df = fetch_raw_data(project_id)
+    unified_df = fetch_unified_data(project_id)
     mappings = fetch_mappings(project_id)
     rules = fetch_rules(project_id)
 
-    if not raw_df.empty and not mappings.empty:
-        with st.status("🔄 データを動的に統合中...", expanded=False):
-            unified_df = processor.unify_raw_records(raw_df, mappings)
+    # 初回マッピング定義がない場合のデフォルト作成
+    if mappings.empty:
+        default_cols = [
+            # 基本項目
+            "売上確定日", "利用発生月", "アーティスト名", "楽曲名", "アルバム名",
+            # コード類
+            "ISRC", "UPC_EAN", "ベンダー識別子",
+            # 配信先
+            "配信サービス名", "国コード", "レーベル名",
+            # 実績・属性
+            "コース_プラン名", "数量", "印税額", "通貨", "空間オーディオ判定", "オフライン再生フラグ", "販売種別"
+        ]
+        mappings = pd.DataFrame({
+            "unified_name": default_cols,
+            "orchard_col": ["" for _ in default_cols],
+            "nextone_col": ["" for _ in default_cols],
+            "itunes_col": ["" for _ in default_cols],
+            "is_date": [c in ["売上確定日", "利用発生月"] for c in default_cols],
+            "is_numeric": [c in ["数量", "印税額"] for c in default_cols]
+        })
 
 # --- 1. 閲覧タブ ---
 with tab_view:
@@ -99,10 +116,8 @@ with tab_view:
         st.info("💡 「⚙️ システム管理」タブで GCP Project ID を設定してください。")
         st.stop()
     
-    if raw_df.empty:
+    if unified_df.empty:
         st.info("データがありません。RAWデータをアップロードしてください。")
-    elif unified_df.empty:
-        st.warning("マッピング定義に基づいて統合されたデータがありません。")
     else:
         # 簡易フィルタ
         c1, c2 = st.columns(2)
@@ -245,69 +260,93 @@ with tab_upload:
         st.info("💡 「⚙️ システム管理」タブで GCP Project ID を設定してください。")
         st.stop()
         
-    st.subheader("📥 大容量データのアップロード")
-    st.caption("1. ファイルをドロップ ➔ 2. 送信完了後、下のボタンを押して登録 (1GBまで対応)")
+    st.subheader("📥 売上データのアップロード")
+    st.caption("ファイルをアップロードして共通フォーマットへ自動整形・登録します。")
 
-    if '_up_uuid' not in st.session_state:
-        st.session_state._up_uuid = uuid.uuid4().hex[:8]
-    uid = st.session_state._up_uuid
-    temp_data_path = f"up_data_{uid}.bin"
-    temp_tag_path = f"up_tag_{uid}.txt"
+    # --- Standard Uploader (Primary/Stable) ---
+    uploaded_file = st.file_uploader("ファイルを選択してください (CSV/TSV/Apple Musicレポート)", type=["csv", "tsv", "txt"])
+    if uploaded_file:
+        if st.button("🚀 登録を開始する", type="primary", use_container_width=True):
+            with st.status("⌛ 整形・保存中...") as stat:
+                try:
+                    formatter = DataFormatter(mappings)
+                    df = formatter.format_file(uploaded_file, uploaded_file.name)
+                    if df is not None and not df.empty:
+                        db_manager.save_unified_data(df, uploaded_file.name, overwrite=True)
+                        stat.update(label=f"✅ {uploaded_file.name} を登録しました", state="complete")
+                        clear_app_cache()
+                        time.sleep(1); st.rerun()
+                    else:
+                        stat.update(label="❌ 解析失敗。フォーマットを確認してください。", state="error")
+                except Exception as e:
+                    st.error(f"処理中にエラーが発生しました: {e}")
+    
+    st.divider()
 
-    try:
-        data_signed_url = db_manager.get_gcs_signed_url(temp_data_path)
-        tag_signed_url = db_manager.get_gcs_signed_url(temp_tag_path)
+    # --- Large File Uploader (Advanced/Signed-URL flow) ---
+    with st.expander("🐘 大容量ファイル(100MB〜1GB以上)のアップロード用 (設定が必要)", expanded=False):
+        st.info("※ブラウザから直接GCSへ高速アップロードします。ローカル環境では権限エラーになる場合があります。")
+        if '_up_uuid' not in st.session_state:
+            st.session_state._up_uuid = uuid.uuid4().hex[:8]
+        uid = st.session_state._up_uuid
+        temp_data_path = f"up_data_{uid}.bin"
+        temp_tag_path = f"up_tag_{uid}.txt"
 
-        upload_html = f"""
-        <div id="drop-zone" style="border:2px dashed #94a3b8; border-radius:12px; background:#f8fafc; padding:35px; text-align:center; cursor:pointer; transition: 0.3s;">
-            <div id="status" style="font-weight:600; color:#475569; font-family:sans-serif;">ここにファイルをドロップ</div>
-            <div id="bar-wrap" style="display:none; margin:15px auto; width:80%; background:#e2e8f0; height:8px; border-radius:4px; overflow:hidden;">
-                <div id="bar" style="width:0%; height:100%; background:#3b82f6; transition:width .2s;"></div>
+        try:
+            data_signed_url = db_manager.get_gcs_signed_url(temp_data_path)
+            tag_signed_url = db_manager.get_gcs_signed_url(temp_tag_path)
+
+            upload_html = f"""
+            <div id="drop-zone" style="border:2px dashed #94a3b8; border-radius:12px; background:#f8fafc; padding:35px; text-align:center; cursor:pointer; transition: 0.3s;">
+                <div id="status" style="font-weight:600; color:#475569; font-family:sans-serif;">ここにファイルをドロップ</div>
+                <div id="bar-wrap" style="display:none; margin:15px auto; width:80%; background:#e2e8f0; height:8px; border-radius:4px; overflow:hidden;">
+                    <div id="bar" style="width:0%; height:100%; background:#3b82f6; transition:width .2s;"></div>
+                </div>
+                <div id="hint" style="font-size:0.8rem; color:#94a3b8; margin-top:10px; font-family:sans-serif;">(自動でファイル名を認識します)</div>
+                <input type="file" id="file-in" style="display:none;" autocomplete="off">
             </div>
-            <div id="hint" style="font-size:0.8rem; color:#94a3b8; margin-top:10px; font-family:sans-serif;">(自動でファイル名を認識します)</div>
-            <input type="file" id="file-in" style="display:none;" autocomplete="off">
-        </div>
-        <script>
-        const zone=document.getElementById('drop-zone'), input=document.getElementById('file-in'),
-              status=document.getElementById('status'), bar=document.getElementById('bar'), wrap=document.getElementById('bar-wrap');
-        zone.onclick=()=>input.click();
-        input.onchange=()=>{{ if(input.files[0]) upload(input.files[0]); }};
-        zone.ondragover=e=>{{ e.preventDefault(); zone.style.background='#eff6ff'; zone.style.borderColor='#3b82f6'; }};
-        zone.ondragleave=()=>{{ zone.style.background='#f8fafc'; zone.style.borderColor='#94a3b8'; }};
-        zone.ondrop=e=>{{ e.preventDefault(); if(e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); }};
+            <script>
+            const zone=document.getElementById('drop-zone'), input=document.getElementById('file-in'),
+                  status=document.getElementById('status'), bar=document.getElementById('bar'), wrap=document.getElementById('bar-wrap');
+            zone.onclick=()=>input.click();
+            input.onchange=()=>{{ if(input.files[0]) upload(input.files[0]); }};
+            zone.ondragover=e=>{{ e.preventDefault(); zone.style.background='#eff6ff'; zone.style.borderColor='#3b82f6'; }};
+            zone.ondragleave=()=>{{ zone.style.background='#f8fafc'; zone.style.borderColor='#94a3b8'; }};
+            zone.ondrop=e=>{{ e.preventDefault(); if(e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); }};
 
-        async function upload(file) {{
-            status.innerText = file.name + ' を送信中...';
-            wrap.style.display='block';
-            const xhr=new XMLHttpRequest();
-            xhr.open('PUT', '{data_signed_url}');
-            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-            xhr.upload.onprogress=e=>{{
-                const p=Math.round(e.loaded/e.total*100);
-                bar.style.width=p+'%';
-            }};
-            xhr.onload=async ()=>{{
-                if(xhr.status===200) {{
-                    status.innerText = '本体完了。ファイル名を記録中...';
-                    const tagXhr = new XMLHttpRequest();
-                    tagXhr.open('PUT', '{tag_signed_url}');
-                    tagXhr.setRequestHeader('Content-Type', 'application/octet-stream');
-                    tagXhr.onload = () => {{
-                        if (tagXhr.status === 200) {{
-                            status.innerText = '✅ 送信完了！「' + file.name + '」の登録準備完了';
-                            wrap.style.display='none';
-                        }}
-                    }};
-                    tagXhr.send(file.name);
-                }} else {{ status.innerText='送信エラー: ' + xhr.status; }}
-            }};
-            xhr.send(file);
-        }}
-        </script>
-        """
-        components.html(upload_html, height=200)
-    except Exception as e:
-        st.error(f"署名付きURLの取得に失敗しました: {e}")
+            async function upload(file) {{
+                status.innerText = file.name + ' を送信中...';
+                wrap.style.display='block';
+                const xhr=new XMLHttpRequest();
+                xhr.open('PUT', '${data_signed_url}');
+                xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+                xhr.upload.onprogress=e=>{{
+                    const p=Math.round(e.loaded/e.total*100);
+                    bar.style.width=p+'%';
+                }};
+                xhr.onload=async ()=>{{
+                    if(xhr.status===200) {{
+                        status.innerText = '本体完了。ファイル名を記録中...';
+                        const tagXhr = new XMLHttpRequest();
+                        tagXhr.open('PUT', '${tag_signed_url}');
+                        tagXhr.setRequestHeader('Content-Type', 'application/octet-stream');
+                        tagXhr.onload = () => {{
+                            if (tagXhr.status === 200) {{
+                                status.innerText = '✅ 送信完了！「' + file.name + '」の登録準備完了';
+                                wrap.style.display='none';
+                            }}
+                        }};
+                        tagXhr.send(file.name);
+                    }} else {{ status.innerText='送信エラー: ' + xhr.status; }}
+                }};
+                xhr.send(file);
+            }}
+            </script>
+            """
+            components.html(upload_html, height=200)
+        except Exception as e:
+            st.warning(f"大容量アップローダーは現在利用できません (権限設定が必要です)")
+            logging.error(f"Signed URL Error: {e}")
 
     if st.button("🚀 BigQueryへの登録を開始する", type="primary", use_container_width=True):
         with st.status("⌛ 処理中...") as stat:
@@ -318,15 +357,18 @@ with tab_upload:
                 else:
                     detected_fn = tag_io.read().decode('utf-8').strip()
                     blob_io = db_manager.get_gcs_blob_io(temp_data_path)
-                    df = processor.parse_raw_only(blob_io, rules=rules)
-                    if df is not None:
-                        db_manager.save_raw_data(df, detected_fn, processor.detect_source(detected_fn), overwrite=True)
+                    
+                    formatter = DataFormatter(mappings)
+                    df = formatter.format_file(blob_io, detected_fn)
+                    
+                    if df is not None and not df.empty:
+                        db_manager.save_unified_data(df, detected_fn, overwrite=True)
                         db_manager.delete_gcs_file(temp_data_path)
                         db_manager.delete_gcs_file(temp_tag_path)
                         stat.update(label=f"✅ {detected_fn} を登録しました", state="complete")
                         clear_app_cache()
                         time.sleep(1); st.rerun()
-                    else: stat.update(label="❌ 解析失敗", state="error")
+                    else: stat.update(label="❌ 解析・整形失敗", state="error")
             except Exception as e: st.error(f"エラー: {e}")
 
     st.divider()
@@ -339,17 +381,52 @@ with tab_upload:
                 c1.write(f"📄 **{h['filename']}**")
                 c2.caption(f"📊 {h['row_count']:,} 件 | 📅 {h['uploaded_at']}")
                 if c3.button("🗑️ 削除", key=f"del_h_{h['filename']}"):
-                    db_manager.delete_raw_data(h['filename'])
+                    db_manager.delete_unified_data(h['filename'])
                     clear_app_cache(); st.rerun()
 
-# --- 5. 管理タブ (マッピング管理) ---
 with tab_settings:
     st.subheader("⚙️ システム管理")
-    # マッピング・ルール・接続設定の表示
-    st.info("マッピングやルールの編集はここで行います。")
+    st.info("APIキー接続や、ファイルアップロード時のマッピング（列名の変換辞書）管理を行います。")
+    
     new_api_key = st.text_input("Gemini API Key", value=gemini_api_key, type="password", autocomplete="new-password")
-    if st.button("💾 設定を保存"):
+    if st.button("💾 APIキーを保存"):
         st.session_state.gemini_api_key = new_api_key.strip()
         st.rerun()
-    if st.button("💣 データベースリセット"):
-        db_manager.reset_dataset(); st.rerun()
+        
+    st.divider()
+    st.subheader("🗺️ マッピング・ルール定義")
+    st.markdown("アップロード時、指定された**【各社ヘッダー】**の内容を**【統合カラム】**にマッピングします。")
+    st.caption("アップロードファイル内の元の列名が設定と完全に一致している必要があります。")
+    
+    edited_mappings = st.data_editor(
+        mappings,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "unified_name": st.column_config.TextColumn("統合カラム", required=True),
+            "orchard_col": st.column_config.TextColumn("ORCHARD ヘッダー"),
+            "nextone_col": st.column_config.TextColumn("NexTone ヘッダー"),
+            "itunes_col": st.column_config.TextColumn("Apple ヘッダー"),
+            "is_date": st.column_config.CheckboxColumn("日付型", default=False),
+            "is_numeric": st.column_config.CheckboxColumn("数値型", default=False)
+        }
+    )
+    
+    if st.button("💾 マッピング定義を保存", type="primary"):
+        db_manager.save_unified_columns_batch(edited_mappings)
+        clear_app_cache()
+        st.success("マッピングを更新しました。")
+        time.sleep(1); st.rerun()
+
+    if st.button("🔄 設定を最新の状態に更新する (キャッシュクリア)"):
+        clear_app_cache()
+        st.success("最新の設定を読み込みました。")
+        time.sleep(1); st.rerun()
+
+    st.divider()
+    st.warning("⚠️ 危険な操作")
+    if st.button("💣 データベースリセット (売上データのみ削除)"):
+        db_manager.reset_dataset()
+        clear_app_cache()
+        st.success("売上データをリセットしました（マッピング設定は維持されます）")
+        time.sleep(1); st.rerun()

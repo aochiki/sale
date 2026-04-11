@@ -22,7 +22,7 @@ steps:
       - '--set-env-vars'
       - 'GEMINI_API_KEY=$_GEMINI_API_KEY'
       - '--set-env-vars'
-      - 'GOOGLE_CLOUD_PROJECT=$PROJECT_ID'
+      - 'GOOGLE_CLOUD_PROJECT=music-sales-project'
 
 # 正常終了時にイメージを登録
 images:

@@ -363,6 +363,8 @@ class DatabaseManager:
         credentials, _ = google.auth.default()
         
         sa_email = getattr(credentials, 'service_account_email', None)
+        logging.info(f"Initial SA email check: {sa_email} (ProjectID in DB: {self.project_id})")
+        
         if not sa_email or sa_email == 'default':
             # Metadata server から実際のメールアドレスを取得を試みる (Cloud Run環境)
             try:
@@ -373,11 +375,11 @@ class DatabaseManager:
                 )
                 with urllib.request.urlopen(req, timeout=1) as response:
                     sa_email = response.read().decode("utf-8").strip()
-            except Exception:
+                logging.info(f"Metadata server detected SA: {sa_email}")
+            except Exception as e:
                 # 最終的なフォールバック
-                # 注意: このフォールバック先が実際に存在しない場合は signBytes API が 404 を返します
                 sa_email = f"{self.project_id}@appspot.gserviceaccount.com"
-                logging.info(f"Using fallback SA email: {sa_email}")
+                logging.info(f"Fallback detected SA: {sa_email} (Reason: {e})")
         
         # 認証情報をリフレッシュ
         auth_request = auth_requests.Request()

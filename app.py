@@ -62,11 +62,11 @@ st.markdown("---")
 load_dotenv()
 env_project_id = os.getenv('GOOGLE_CLOUD_PROJECT', '').strip()
 
-# 環境変数が設定されている場合は、セッション情報よりも優先して強制同期する
+# 強制同期: 環境変数がある場合はセッション状態を上書き、無い場合はデフォルトをセット
 if env_project_id:
     st.session_state.project_id = env_project_id
-elif 'project_id' not in st.session_state:
-    st.session_state.project_id = ''
+elif not st.session_state.get('project_id'):
+    st.session_state.project_id = 'music-sales-project' # 最後のリゾートとして本番IDをセット
 
 if 'gemini_api_key' not in st.session_state:
     st.session_state.gemini_api_key = os.getenv('GEMINI_API_KEY', '')
@@ -408,9 +408,10 @@ with tab_settings:
         time.sleep(1); st.rerun()
 
     st.divider()
-    st.warning("⚠️ 危険な操作")
-    if st.button("💣 データベースリセット (売上データのみ削除)"):
-        db_manager.reset_dataset()
-        clear_app_cache()
-        st.success("売上データをリセットしました（マッピング設定は維持されます）")
-        time.sleep(1); st.rerun()
+    with st.expander("🔍 診断情報 (デバッグ用)"):
+        st.write(f"**実行プロジェクトID:** `{project_id}`")
+        st.write(f"**環境変数 (GOOGLE_CLOUD_PROJECT):** `{os.getenv('GOOGLE_CLOUD_PROJECT')}`")
+        st.write(f"**Version:** `v13.3` (Diagnostic)")
+        if st.button("🔄 セッション状態を完全にリセット"):
+            st.session_state.clear()
+            st.rerun()

@@ -227,7 +227,7 @@ class DataFormatter:
             """元のソース列名リストから、現在の統一名を検索する"""
             for _, m in self.mappings.iterrows():
                 for sc in source_col_names:
-                    if any(str(m.get(k, "")) == sc for k in ["orchard_col", "nextone_col", "apple_fin_col", "apple_sales_col", "apple_other_col", "itunes_col"] if m.get(k)):
+                    if any(str(m.get(k, "")) == sc for k in ["orchard_col", "nextone_col", "apple_fin_col", "apple_sales_col", "apple_other_col"] if m.get(k)):
                         return m.get('unified_name')
             return None
 

@@ -128,27 +128,35 @@ class SalesAggregator:
             return df
 
         new_df = pd.DataFrame(index=df.index)
-        src_col_key = {
-            "ORCHARD": "orchard_col",
-            "NEXTONE": "nextone_col",
-            "ITUNES": "itunes_col"
-        }.get(source_type.upper(), "orchard_col")
-
+        
         # 統合後のカラム名を一貫させるため、元データのカラム名とマッピング定義を正規化
         df.columns = [str(c).strip() for c in df.columns]
         df_col_map = {c: c for c in df.columns} 
 
         for _, row in mappings.iterrows():
             unified_name = str(row['unified_name']).strip()
-            source_col = str(row[src_col_key]).strip()
-
-            if source_col in df_col_map:
+            
+            # ソース列名の特定
+            source_col = ""
+            if source_type.upper() == "ORCHARD":
+                source_col = str(row.get('orchard_col', '')).strip()
+            elif source_type.upper() == "NEXTONE":
+                source_col = str(row.get('nextone_col', '')).strip()
+            elif source_type.upper() == "ITUNES":
+                # Appleの場合は、現在の3つのサブカラムから値が入っているものを探す
+                for key in ["apple_fin_col", "apple_sales_col", "apple_other_col"]:
+                    val = str(row.get(key, '')).strip()
+                    if val and val in df_col_map:
+                        source_col = val
+                        break
+            
+            if source_col and source_col in df_col_map:
                 orig_col = df_col_map[source_col]
                 val = df[orig_col]
                 
-                if row['is_date']:
+                if row.get('is_date'):
                     val = self._normalize_date(val)
-                elif row['is_numeric']:
+                elif row.get('is_numeric'):
                     val = pd.to_numeric(val, errors='coerce').fillna(0)
                 
                 new_df[unified_name] = val

@@ -50,6 +50,10 @@ def fetch_mappings(project_id):
 def fetch_rules(project_id):
     return get_db(project_id).get_parsing_rules()
 
+@st.cache_data(ttl=60)
+def fetch_exchange_rates(project_id):
+    return get_db(project_id).get_exchange_rates()
+
 def clear_app_cache():
     st.cache_data.clear()
     st.cache_resource.clear()
@@ -83,6 +87,7 @@ unified_df = pd.DataFrame()
 if project_id:
     db_manager = get_db(project_id)
     rules = fetch_rules(project_id)
+    exchange_rates_df = fetch_exchange_rates(project_id)
 
 tab_view, tab_flexible, tab_ai, tab_upload, tab_settings = st.tabs([
     "📋 売上データ閲覧", "📊 自由集計", "🤖 AI集計", "📥 RAWデータ追加", "⚙️ システム管理"
@@ -111,9 +116,11 @@ if project_id:
             "unified_name": default_cols,
             "orchard_col": ["" for _ in default_cols],
             "nextone_col": ["" for _ in default_cols],
-            "itunes_col": ["" for _ in default_cols],
+            "apple_fin_col": ["" for _ in default_cols],
+            "apple_sales_col": ["" for _ in default_cols],
+            "apple_other_col": ["" for _ in default_cols],
             "is_date": [c in ["売上確定日", "利用発生月"] for c in default_cols],
-            "is_numeric": [c in ["数量", "印税額"] for c in default_cols]
+            "is_numeric": [c in ["数量", "印税額", "印税額(JPY)"] for c in default_cols]
         })
 
 # --- 1. 閲覧タブ ---
@@ -277,7 +284,7 @@ with tab_upload:
             <div id="bar-wrap" style="display:none; margin:20px auto; width:85%; background:#e2e8f0; height:10px; border-radius:5px; overflow:hidden;">
                 <div id="bar" style="width:0%; height:100%; background:linear-gradient(90deg, #3b82f6, #60a5fa); transition:width .2s;"></div>
             </div>
-            <div id="hint" style="font-size:0.9rem; color:#94a3b8; margin-top:15px; font-family:sans-serif;">(Apple Music, NexTone, Orchardのレポートに対応)</div>
+            <div id="hint" style="font-size:0.9rem; color:#94a3b8; margin-top:15px; font-family:sans-serif;">(Apple Music, NexTone, Orchardのレポートに対応/推奨: TSV, CSV)</div>
             <input type="file" id="file-in" style="display:none;" autocomplete="off">
         </div>
         <script>
@@ -320,32 +327,113 @@ with tab_upload:
         """
         components.html(upload_html, height=220)
     except Exception as e:
-        st.error(f"アップローダーの初期化に失敗しました: {e}")
-        logging.error(f"Signed URL Error: {e}")
+        st.warning("⚠️ 権限エラーによりカスタムアップローダー（ドラッグ＆ドロップ）が起動できません。標準のアップローダーに切り替えて継続します。")
+        std_file = st.file_uploader("ここにファイルをドロップ、または選択してください", type=["csv", "tsv", "txt", "txt.gz"])
+        if std_file:
+            with st.status("🚀 クラウド(GCS)へ準備中...") as gcs_stat:
+                gcs_stat.update(label=f"📦 {std_file.name} をクラウドへ一時転送中...")
+                # 直接アップロード
+                db_manager.upload_to_gcs_direct(std_file, temp_data_path)
+                # タグ（元ファイル名）もアップロード
+                import io
+                tag_io = io.BytesIO(std_file.name.encode('utf-8'))
+                db_manager.upload_to_gcs_direct(tag_io, temp_tag_path)
+                gcs_stat.update(label="✅ 転送完了。下のボタンでBigQueryへの登録を開始してください", state="complete")
+        logging.info(f"Signed URL fallback used due to: {e}")
 
-    if st.button("🚀 BigQueryへの登録を開始する", type="primary", use_container_width=True):
-        with st.status("⌛ 処理中...") as stat:
-            try:
-                tag_io = db_manager.get_gcs_blob_io(temp_tag_path)
-                if not tag_io:
-                    st.warning("アップロードが完了していません。")
-                else:
-                    detected_fn = tag_io.read().decode('utf-8').strip()
-                    blob_io = db_manager.get_gcs_blob_io(temp_data_path)
-                    
-                    formatter = DataFormatter(mappings)
-                    df = formatter.format_file(blob_io, detected_fn)
-                    
-                    if df is not None and not df.empty:
-                        row_count = db_manager.save_unified_data(df, detected_fn, overwrite=True)
+    # --- BigQuery Registration Process (Session State based) ---
+    if 'reg_state' not in st.session_state:
+        st.session_state.reg_state = 'idle'
+    if 'reg_preview' not in st.session_state:
+        st.session_state.reg_preview = None # (df, unmapped_cols, filename, overwrite_mode)
+
+    try:
+        tag_io = db_manager.get_gcs_blob_io(temp_tag_path)
+        if tag_io:
+            detected_fn = tag_io.read().decode('utf-8').strip()
+            st.info(f"📋 待機中: **{detected_fn}**")
+            
+            # 存在チェック
+            is_exists = db_manager.check_file_exists(detected_fn)
+            can_proceed = True
+            
+            if is_exists:
+                st.warning(f"⚠️ **{detected_fn}** は既に登録されています。")
+                overwrite_toggle = st.checkbox("上書きして再登録する", value=False)
+                if not overwrite_toggle:
+                    can_proceed = False
+                    st.info("💡 上書きする場合は上のチェックボックスをオンにしてください。")
+            else:
+                overwrite_toggle = True
+
+            # Step 1: 解析・プレビュー開始
+            if st.session_state.reg_state == 'idle':
+                if st.button("🔍 解析・プレビューを開始する", type="primary", use_container_width=True, disabled=not can_proceed):
+                    with st.status("⌛ ファイルを解析中...") as stat:
+                        try:
+                            blob_io = db_manager.get_gcs_blob_io(temp_data_path)
+                            rates = fetch_exchange_rates(project_id)
+                            formatter = DataFormatter(mappings, exchange_rates=rates)
+                            df, unmapped_cols = formatter.format_file(blob_io, detected_fn)
+                            
+                            if df is not None:
+                                st.session_state.reg_preview = (df, unmapped_cols, detected_fn, overwrite_toggle)
+                                st.session_state.reg_state = 'preview'
+                                stat.update(label="✅ 解析完了。内容を確認してください。", state="complete")
+                                st.rerun()
+                            else:
+                                stat.update(label="❌ 解析失敗。データが空か形式が不正です。", state="error")
+                        except Exception as e:
+                            st.error(f"解析エラー: {e}")
+
+            # Step 2: プレビュー表示 & 登録確定
+            if st.session_state.reg_state == 'preview' and st.session_state.reg_preview:
+                df, unmapped_cols, fn, ovr = st.session_state.reg_preview
+                
+                st.markdown(f"### 🔍 **{fn}** のプレビュー (先頭5件)")
+                st.dataframe(df.head(5), use_container_width=True)
+                
+                if unmapped_cols:
+                    with st.expander(f"⚠️ 未受容カラムが {len(unmapped_cols)} 件あります"):
+                        st.write(", ".join(unmapped_cols))
+                        st.info("💡 これらの列を有効にしたい場合は「システム管理」タブで設定を更新してから再度アップロードしてください。")
+
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("✅ この内容で登録を確定する", type="primary", use_container_width=True):
+                        st.session_state.reg_state = 'saving'
+                        st.rerun()
+                with c2:
+                    if st.button("❌ キャンセル", use_container_width=True):
+                        st.session_state.reg_state = 'idle'
+                        st.session_state.reg_preview = None
+                        st.rerun()
+
+            # Step 3: 保存処理
+            if st.session_state.reg_state == 'saving' and st.session_state.reg_preview:
+                df, unmapped_cols, fn, ovr = st.session_state.reg_preview
+                with st.status("🚀 BigQueryへ送信中...") as stat:
+                    try:
+                        def update_progress(msg): stat.update(label=f"📦 {msg}")
+                        row_count = db_manager.save_unified_data(df, fn, overwrite=ovr, progress_callback=update_progress)
+                        
+                        # Cleanup
                         db_manager.delete_gcs_file(temp_data_path)
                         db_manager.delete_gcs_file(temp_tag_path)
-                        stat.update(label=f"✅ {detected_fn} ({row_count:,} 件) の登録が完了しました", state="complete")
-                        st.success(f"✅ {detected_fn} ({row_count:,} 件) をデータベースへ登録しました。")
+                        
+                        st.session_state.reg_state = 'idle'
+                        st.session_state.reg_preview = None
+                        
+                        stat.update(label=f"✅ {fn} ({row_count:,} 件) の登録が完了しました", state="complete")
+                        st.success(f"✅ {fn} の登録が完了しました。")
                         clear_app_cache()
-                        time.sleep(1); st.rerun()
-                    else: stat.update(label="❌ 解析・整形失敗", state="error")
-            except Exception as e: st.error(f"エラー: {e}")
+                        time.sleep(2)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"登録エラー: {e}")
+                        st.session_state.reg_state = 'preview' # Fail back to preview
+    except Exception:
+        pass
 
     st.divider()
     st.markdown("#### 📋 取り込み済み履歴 (最新10件)")
@@ -382,7 +470,9 @@ with tab_settings:
             "unified_name": st.column_config.TextColumn("統合カラム", required=True),
             "orchard_col": st.column_config.TextColumn("ORCHARD ヘッダー"),
             "nextone_col": st.column_config.TextColumn("NexTone ヘッダー"),
-            "itunes_col": st.column_config.TextColumn("Apple ヘッダー"),
+            "apple_fin_col": st.column_config.TextColumn("Apple(ストリーミング)"),
+            "apple_sales_col": st.column_config.TextColumn("Apple(ダウンロード)"),
+            "apple_other_col": st.column_config.TextColumn("Apple(その他)"),
             "is_date": st.column_config.CheckboxColumn("日付型", default=False),
             "is_numeric": st.column_config.CheckboxColumn("数値型", default=False)
         }

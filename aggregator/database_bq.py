@@ -13,35 +13,43 @@ import tempfile
 class DatabaseManager:
     # デフォルトのマッピング設定（消失時の自動復旧用）
     DEFAULT_MAPPINGS = [
-        {"unified_name": "売上確定日", "orchard_col": "STATEMENT PERIOD", "nextone_col": "分配月", "itunes_col": "End Date", "is_date": True, "is_numeric": False},
-        {"unified_name": "利用発生月", "orchard_col": "TRANSACTION DATE", "nextone_col": "利用月", "itunes_col": "End Date", "is_date": True, "is_numeric": False},
-        {"unified_name": "アーティスト名", "orchard_col": "PRODUCT ARTIST", "nextone_col": "アーティスト名", "itunes_col": "Artist", "is_date": False, "is_numeric": False},
-        {"unified_name": "楽曲名", "orchard_col": "TRACK", "nextone_col": "楽曲名", "itunes_col": "Content Title", "is_date": False, "is_numeric": False},
-        {"unified_name": "アルバム名", "orchard_col": "PRODUCT", "nextone_col": "アルバム名", "itunes_col": "Product", "is_date": False, "is_numeric": False},
-        {"unified_name": "ISRC", "orchard_col": "ISRC", "nextone_col": "ISRC", "itunes_col": "ISRC", "is_date": False, "is_numeric": False},
-        {"unified_name": "UPC_EAN", "orchard_col": "DISPLAY UPC", "nextone_col": "UPC", "itunes_col": "", "is_date": False, "is_numeric": False},
-        {"unified_name": "ベンダー識別子", "orchard_col": "PRODUCT CODE", "nextone_col": "商品番号", "itunes_col": "Vendor Identifier", "is_date": False, "is_numeric": False},
-        {"unified_name": "原盤アルバムコード", "orchard_col": "", "nextone_col": "原盤/アルバムコード", "itunes_col": "", "is_date": False, "is_numeric": False},
-        {"unified_name": "アカウントID", "orchard_col": "ACCOUNT ID", "nextone_col": "", "itunes_col": "Apple Identifier", "is_date": False, "is_numeric": False},
-        {"unified_name": "YouTube動画ID", "orchard_col": "YOUTUBE VIDEO ID", "nextone_col": "", "itunes_col": "", "is_date": False, "is_numeric": False},
-        {"unified_name": "配信サービス名", "orchard_col": "STORE", "nextone_col": "DSP名", "itunes_col": "Report Type", "is_date": False, "is_numeric": False},
-        {"unified_name": "サービス詳細", "orchard_col": "SERVICE DETAIL", "nextone_col": "サービス名", "itunes_col": "", "is_date": False, "is_numeric": False},
-        {"unified_name": "国コード", "orchard_col": "SALE COUNTRY", "nextone_col": "国", "itunes_col": "Storefront Name", "is_date": False, "is_numeric": False},
-        {"unified_name": "レーベル名", "orchard_col": "LABEL IMPRINT", "nextone_col": "レーベル名", "itunes_col": "Label/Studio/Network", "is_date": False, "is_numeric": False},
-        {"unified_name": "数量", "orchard_col": "QUANTITY", "nextone_col": "数量", "itunes_col": "Total  Royalty Bearing Plays", "is_date": False, "is_numeric": True},
-        {"unified_name": "印税額", "orchard_col": "NET SHARE ACCOUNT CURRENCY", "nextone_col": "総支払額", "itunes_col": "Net Royalty Total", "is_date": False, "is_numeric": True},
-        {"unified_name": "売上総額", "orchard_col": "GROSS REVENUE ACCOUNT CURRENCY", "nextone_col": "使用料合計", "itunes_col": "", "is_date": False, "is_numeric": True},
-        {"unified_name": "通貨", "orchard_col": "ACCOUNT CURRENCY", "nextone_col": "", "itunes_col": "Currency", "is_date": False, "is_numeric": False},
-        {"unified_name": "為替レート", "orchard_col": "CURRENCY CONVERSION RATE", "nextone_col": "", "itunes_col": "", "is_date": False, "is_numeric": True},
-        {"unified_name": "アルバムバージョン", "orchard_col": "PRODUCT VERSION", "nextone_col": "", "itunes_col": "", "is_date": False, "is_numeric": False},
-        {"unified_name": "楽曲バージョン", "orchard_col": "TRACK VERSION", "nextone_col": "", "itunes_col": "", "is_date": False, "is_numeric": False},
-        {"unified_name": "トラックアーティスト", "orchard_col": "TRACK ARTIST", "nextone_col": "", "itunes_col": "Artist", "is_date": False, "is_numeric": False},
-        {"unified_name": "空間オーディオ判定", "orchard_col": "", "nextone_col": "", "itunes_col": "Spatial Availability Indicator", "is_date": False, "is_numeric": False},
-        {"unified_name": "オフライン再生フラグ", "orchard_col": "", "nextone_col": "", "itunes_col": "Offline Indicator", "is_date": False, "is_numeric": False},
-        {"unified_name": "販売種別", "orchard_col": "TRANSACTION TYPE", "nextone_col": "販売種別", "itunes_col": "Media Type", "is_date": False, "is_numeric": False},
-        {"unified_name": "販売種別詳細", "orchard_col": "TRANSACTION SUBTYPE", "nextone_col": "", "itunes_col": "", "is_date": False, "is_numeric": False},
-        {"unified_name": "配信区分", "orchard_col": "", "nextone_col": "配信区分", "itunes_col": "", "is_date": False, "is_numeric": False},
-        {"unified_name": "サービスタイプ", "orchard_col": "", "nextone_col": "サービスタイプ", "itunes_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "売上確定日", "orchard_col": "STATEMENT PERIOD", "nextone_col": "分配月", "apple_fin_col": "End Date", "apple_sales_col": "End Date", "apple_other_col": "", "is_date": True, "is_numeric": False},
+        {"unified_name": "利用発生月", "orchard_col": "TRANSACTION DATE", "nextone_col": "利用月", "apple_fin_col": "End Date", "apple_sales_col": "End Date", "apple_other_col": "", "is_date": True, "is_numeric": False},
+        {"unified_name": "アーティスト名", "orchard_col": "PRODUCT ARTIST", "nextone_col": "アーティスト名", "apple_fin_col": "Artist", "apple_sales_col": "Artist/Show/Developer/Author", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "楽曲名", "orchard_col": "TRACK", "nextone_col": "楽曲名", "apple_fin_col": "Content Title", "apple_sales_col": "Title", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "アルバム名", "orchard_col": "PRODUCT", "nextone_col": "アルバム名", "apple_fin_col": "Product", "apple_sales_col": "", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "ISRC", "orchard_col": "ISRC", "nextone_col": "ISRC", "apple_fin_col": "ISRC", "apple_sales_col": "ISRC/ISBN", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "UPC_EAN", "orchard_col": "DISPLAY UPC", "nextone_col": "UPC", "apple_fin_col": "", "apple_sales_col": "UPC", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "ベンダー識別子", "orchard_col": "PRODUCT CODE", "nextone_col": "商品番号", "apple_fin_col": "Vendor Identifier", "apple_sales_col": "Vendor Identifier", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "原盤アルバムコード", "orchard_col": "", "nextone_col": "原盤/アルバムコード", "apple_fin_col": "", "apple_sales_col": "", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "アカウントID", "orchard_col": "ACCOUNT ID", "nextone_col": "", "apple_fin_col": "Apple Identifier", "apple_sales_col": "Apple Identifier", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "YouTube動画ID", "orchard_col": "YOUTUBE VIDEO ID", "nextone_col": "", "apple_fin_col": "", "apple_sales_col": "", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "配信サービス名", "orchard_col": "STORE", "nextone_col": "DSP名", "apple_fin_col": "Report Type", "apple_sales_col": "", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "サービス詳細", "orchard_col": "SERVICE DETAIL", "nextone_col": "サービス名", "apple_fin_col": "", "apple_sales_col": "", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "国コード", "orchard_col": "SALE COUNTRY", "nextone_col": "国", "apple_fin_col": "Storefront Name", "apple_sales_col": "Country Of Sale", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "レーベル名", "orchard_col": "LABEL IMPRINT", "nextone_col": "レーベル名", "apple_fin_col": "Label/Studio/Network", "apple_sales_col": "Label/Studio/Network/Developer/Publisher", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "数量", "orchard_col": "QUANTITY", "nextone_col": "数量", "apple_fin_col": "Total  Royalty Bearing Plays", "apple_sales_col": "Quantity", "apple_other_col": "", "is_date": False, "is_numeric": True},
+        {"unified_name": "収益", "orchard_col": "NET SHARE ACCOUNT CURRENCY", "nextone_col": "総支払額", "apple_fin_col": "Net Royalty Total", "apple_sales_col": "Partner Share", "apple_other_col": "", "is_date": False, "is_numeric": True},
+        {"unified_name": "売上総額", "orchard_col": "GROSS REVENUE ACCOUNT CURRENCY", "nextone_col": "使用料合計", "apple_fin_col": "", "apple_sales_col": "", "apple_other_col": "", "is_date": False, "is_numeric": True},
+        {"unified_name": "通貨", "orchard_col": "ACCOUNT CURRENCY", "nextone_col": "", "apple_fin_col": "Currency", "apple_sales_col": "Partner Share Currency", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "収益(JPY)", "orchard_col": "", "nextone_col": "", "apple_fin_col": "", "apple_sales_col": "", "apple_other_col": "", "is_date": False, "is_numeric": True},
+        {"unified_name": "為替レート", "orchard_col": "CURRENCY CONVERSION RATE", "nextone_col": "", "apple_fin_col": "", "apple_sales_col": "", "apple_other_col": "", "is_date": False, "is_numeric": True},
+        {"unified_name": "アルバムバージョン", "orchard_col": "PRODUCT VERSION", "nextone_col": "", "apple_fin_col": "", "apple_sales_col": "", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "楽曲バージョン", "orchard_col": "TRACK VERSION", "nextone_col": "", "apple_fin_col": "", "apple_sales_col": "", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "トラックアーティスト", "orchard_col": "TRACK ARTIST", "nextone_col": "", "apple_fin_col": "Artist", "apple_sales_col": "", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "空間オーディオ判定", "orchard_col": "", "nextone_col": "", "apple_fin_col": "Spatial Availability Indicator", "apple_sales_col": "", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "オフライン再生フラグ", "orchard_col": "", "nextone_col": "", "apple_fin_col": "Offline Indicator", "apple_sales_col": "", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "販売種別", "orchard_col": "TRANSACTION TYPE", "nextone_col": "販売種別", "apple_fin_col": "Media Type", "apple_sales_col": "Sales or Return", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "販売種別詳細", "orchard_col": "TRANSACTION SUBTYPE", "nextone_col": "", "apple_fin_col": "", "apple_sales_col": "", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "配信区分", "orchard_col": "", "nextone_col": "配信区分", "apple_fin_col": "", "apple_sales_col": "", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "サービスタイプ", "orchard_col": "", "nextone_col": "サービスタイプ", "apple_fin_col": "Product Type Identifier", "apple_sales_col": "Product Type Identifier", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "拡張パートナーシェア", "orchard_col": "", "nextone_col": "", "apple_fin_col": "", "apple_sales_col": "Extended Partner Share", "apple_other_col": "", "is_date": False, "is_numeric": True},
+        {"unified_name": "Grid", "orchard_col": "", "nextone_col": "", "apple_fin_col": "Grid", "apple_sales_col": "Grid", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "ISAN識別子", "orchard_col": "", "nextone_col": "", "apple_fin_col": "", "apple_sales_col": "ISAN/Other Identifier", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "予約注文フラグ", "orchard_col": "", "nextone_col": "", "apple_fin_col": "", "apple_sales_col": "Pre-order Flag", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "プロモコード", "orchard_col": "", "nextone_col": "", "apple_fin_col": "", "apple_sales_col": "Promo Code", "apple_other_col": "", "is_date": False, "is_numeric": False},
+        {"unified_name": "顧客価格", "orchard_col": "", "nextone_col": "", "apple_fin_col": "", "apple_sales_col": "Customer Price", "apple_other_col": "", "is_date": False, "is_numeric": True},
+        {"unified_name": "顧客通貨", "orchard_col": "", "nextone_col": "", "apple_fin_col": "", "apple_sales_col": "Customer Currency", "apple_other_col": "", "is_date": False, "is_numeric": False},
     ]
 
     # 統合テーブルは動的スキーマ(またはpandasから自動生成)を許容する方針とします
@@ -110,6 +118,9 @@ class DatabaseManager:
         # BigQueryの列名ルール（英数字とアンダースコア）に厳格に合わせる場合もありますが、
         # 近年のBQは柔軟なためそのまま送信を試みます。
 
+        if progress_callback:
+            progress_callback(f"📝 データを変換中... ({total_rows:,} 件)")
+
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json', encoding='utf-8') as tmp:
             # ndjson出力時にpandasのto_jsonを使用
             # 日付などはそのまま文字列として扱う
@@ -117,7 +128,7 @@ class DatabaseManager:
             tmp_path = tmp.name
 
         if progress_callback:
-            progress_callback(f"📦 クラウドへの最終転送を開始しています ({total_rows:,} 件)...")
+            progress_callback(f"🚀 クラウド(BigQuery)へロード中...")
 
         job_config = bigquery.LoadJobConfig(
             write_disposition="WRITE_APPEND",
@@ -133,6 +144,9 @@ class DatabaseManager:
                 # location をデータセットに合わせて asia-northeast1 に固定
                 job = self.client.load_table_from_file(source_file, table_id, job_config=job_config, location="asia-northeast1")
                 job.result() # 完了まで待機
+                
+            if progress_callback:
+                progress_callback(f"✅ ロード完了")
                 
             logging.info(f"Successfully saved {len(df)} rows for UNIFIED data: {filename} to {table_id}")
             return len(df)
@@ -156,6 +170,19 @@ class DatabaseManager:
             return True
         except Exception as e:
             logging.error(f"Failed to delete unified data for {filename}: {e}")
+            return False
+
+    def upload_to_gcs_direct(self, file_obj, filename):
+        """ファイルを直接GCSにアップロードする（署名付きURLを使わない）"""
+        try:
+            bucket = self.storage_client.bucket(self.bucket_name)
+            blob = bucket.blob(filename)
+            # BytesIOなどのファイルライクオブジェクトをそのままアップロード
+            blob.upload_from_file(file_obj)
+            logging.info(f"Directly uploaded to GCS: {filename}")
+            return True
+        except Exception as e:
+            logging.error(f"Failed direct upload to GCS: {e}")
             return False
 
     def check_file_exists(self, filename):
@@ -239,11 +266,17 @@ class DatabaseManager:
     def save_unified_columns_batch(self, df):
         """マッピング辞書全体を一括で保存する（画面から編集されたものを上書き）"""
         table_id = f"{self.project_id}.{self.dataset_id}.unified_columns"
+        
+    def save_unified_columns_batch(self, df):
+        """マッピング辞書全体を一括で保存する（画面から編集されたものを上書き）"""
+        table_id = f"{self.project_id}.{self.dataset_id}.unified_columns"
         schema = [
             bigquery.SchemaField("unified_name", "STRING"),
             bigquery.SchemaField("orchard_col", "STRING"),
             bigquery.SchemaField("nextone_col", "STRING"),
-            bigquery.SchemaField("itunes_col", "STRING"),
+            bigquery.SchemaField("apple_fin_col", "STRING"),
+            bigquery.SchemaField("apple_sales_col", "STRING"),
+            bigquery.SchemaField("apple_other_col", "STRING"),
             bigquery.SchemaField("is_date", "BOOLEAN"),
             bigquery.SchemaField("is_numeric", "BOOLEAN"),
         ]
@@ -252,8 +285,15 @@ class DatabaseManager:
         # テーブルを一度空にする
         self.client.query(f"DELETE FROM `{table_id}` WHERE true").result()
         if not df.empty:
-            job_config = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND", schema=schema)
-            self.client.load_table_from_dataframe(df, table_id, job_config=job_config, location="asia-northeast1").result()
+            # 入力データに必要なカラムが揃っているか確認 (古いデータのエラー回避)
+            col_list = [s.name for s in schema]
+            df_to_save = df[col_list].copy() if all(c in df.columns for c in col_list) else df
+            
+            # 常に WRITE_TRUNCATE (上書き) にすることで重複を確実に防ぐ
+            job_config = bigquery.LoadJobConfig(write_disposition="WRITE_TRUNCATE", schema=schema)
+            self.client.load_table_from_dataframe(
+                df_to_save, table_id, job_config=job_config, location="asia-northeast1"
+            ).result()
             logging.info(f"Saved mapping columns in batch: {len(df)} rows")
 
     def get_unified_columns(self):
@@ -261,6 +301,10 @@ class DatabaseManager:
         table_id = f"{self.project_id}.{self.dataset_id}.unified_columns"
         try:
             df = self.client.query(f"SELECT * FROM `{table_id}`").to_dataframe()
+            # 念のため、統一名で重複を除去 (最新のものを採用)
+            if not df.empty:
+                df = df.drop_duplicates(subset=['unified_name'], keep='last')
+
             if df.empty:
                 logging.info("Mapping table is empty. Restoring defaults...")
                 self.save_unified_columns_batch(pd.DataFrame(self.DEFAULT_MAPPINGS))
@@ -280,6 +324,35 @@ class DatabaseManager:
             )).result()
         except exceptions.NotFound:
             pass
+
+    def save_exchange_rates(self, df):
+        """為替レート定義を一括で保存する"""
+        table_id = f"{self.project_id}.{self.dataset_id}.exchange_rates"
+        schema = [
+            bigquery.SchemaField("currency_code", "STRING"),
+            bigquery.SchemaField("rate_to_jpy", "FLOAT"),
+            bigquery.SchemaField("updated_at", "TIMESTAMP"),
+        ]
+        self._ensure_table_exists(table_id, schema)
+        
+        # 一次的にDFへタイムスタンプ付与
+        df = df.copy()
+        df['updated_at'] = datetime.datetime.now()
+        
+        # テーブルを一度空にする
+        self.client.query(f"DELETE FROM `{table_id}` WHERE true").result()
+        if not df.empty:
+            job_config = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND", schema=schema)
+            self.client.load_table_from_dataframe(df, table_id, job_config=job_config, location="asia-northeast1").result()
+            logging.info(f"Saved exchange rates: {len(df)} rows")
+
+    def get_exchange_rates(self):
+        """為替レート一覧を取得する（空の場合はデフォルトの空DFを返す）"""
+        table_id = f"{self.project_id}.{self.dataset_id}.exchange_rates"
+        try:
+            return self.client.query(f"SELECT currency_code, rate_to_jpy FROM `{table_id}`").to_dataframe()
+        except exceptions.NotFound:
+            return pd.DataFrame(columns=["currency_code", "rate_to_jpy"])
 
     def upload_large_file_via_gcs(self, local_path, filename, source_type, overwrite=True, progress_callback=None):
         """

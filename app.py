@@ -314,8 +314,10 @@ with tab_upload:
                     tagXhr.setRequestHeader('Content-Type', 'application/octet-stream');
                     tagXhr.onload = () => {{
                         if (tagXhr.status === 200) {{
-                            status.innerText = '✅ 送信完了！「' + file.name + '」の登録準備完了';
+                            status.innerText = '✅ 送信完了！「' + file.name + '」の準備ができました。';
                             wrap.style.display='none';
+                            const hint = document.getElementById('hint');
+                            hint.innerHTML = '<b style="color:#10b981;">解析の準備ができました。枠の外にある「🔍 アップロードを確認」ボタンを押してください。</b>';
                         }}
                     }};
                     tagXhr.send(file.name);
@@ -347,11 +349,20 @@ with tab_upload:
     if 'reg_preview' not in st.session_state:
         st.session_state.reg_preview = None # (df, unmapped_cols, filename, overwrite_mode)
 
+    # 手動再チェック用ボタン
+    if st.session_state.reg_state == 'idle':
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            if st.button("🔄 アップロードを再確認", use_container_width=True):
+                st.rerun()
+        with c2:
+            st.caption("※ファイルを選択して「準備完了」と出た後にボタンが表示されない場合は、左のボタンを押してください。")
+
     try:
         tag_io = db_manager.get_gcs_blob_io(temp_tag_path)
         if tag_io:
             detected_fn = tag_io.read().decode('utf-8').strip()
-            st.info(f"📋 待機中: **{detected_fn}**")
+            st.info(f"📋 解析待ち: **{detected_fn}**")
             
             # 存在チェック
             is_exists = db_manager.check_file_exists(detected_fn)

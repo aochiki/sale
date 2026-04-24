@@ -30,7 +30,6 @@ class ExchangeRateService:
         if date is None:
             date = datetime.date.today()
         
-        # 土日はデータがない場合があるため、金曜日に戻すなどの処理が必要な場合もあるが、
         # Frankfurter APIは自動的に直近の営業日の値を返す。
         date_str = date.isoformat()
         
@@ -38,16 +37,16 @@ class ExchangeRateService:
         if date_str in self.cache and from_currency in self.cache[date_str]:
             return self.cache[date_str][from_currency]
         
+        # セッションの初期化 (Connection Pooling)
+        if not hasattr(self, '_session'):
+            import requests
+            self._session = requests.Session()
+
         try:
-            # Frankfurter APIは "from=" を基準通貨にする
-            # https://api.frankfurter.dev/2026-02-15?from=AUD&to=JPY
             url = f"{self.base_url}/{date_str}"
-            params = {
-                "from": from_currency,
-                "to": self.base_currency
-            }
+            params = {"from": from_currency, "to": self.base_currency}
             
-            response = requests.get(url, params=params, timeout=5)
+            response = self._session.get(url, params=params, timeout=5)
             if response.status_code == 200:
                 data = response.json()
                 rate = data.get("rates", {}).get(self.base_currency)
@@ -62,3 +61,20 @@ class ExchangeRateService:
             logging.error(f"Failed to fetch exchange rate: {e}")
         
         return 1.0 # 失敗時のフォールバック
+
+    def get_rates_batch(self, currency_date_pairs):
+        """複数の通貨・日付ペアのレートを並列で取得する"""
+        from concurrent.futures import ThreadPoolExecutor
+        
+        results = {}
+        def fetch_one(pair):
+            curr, dt = pair
+            return pair, self.get_rate(curr, dt)
+
+        # 重複を除去
+        unique_pairs = list(set(currency_date_pairs))
+        
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            for pair, rate in executor.map(fetch_one, unique_pairs):
+                results[pair] = rate
+        return results

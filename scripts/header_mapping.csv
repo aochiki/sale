@@ -1,0 +1,62 @@
+日本語ヘッダー名,ソース1 (国内共通),ソース2 (Apple Sales),ソース3 (Apple Music),ソース4 (YouTube/Statement),ソース5 (YouTube Asset)
+分配月/計上期間,分配月,Start Date,,STATEMENT PERIOD,
+利用月/発生日,利用月,End Date,,TRANSACTION DATE,Day
+ISRC,ISRC,ISRC/ISBN,ISRC,ISRC,ISRC
+UPC (主),UPC,UPC,,DISPLAY UPC,UPC
+UPC (副),,,,MANUFACTURER UPC,
+商品番号/コード,商品番号,Vendor Identifier,Vendor Identifier,PRODUCT CODE,Asset ID
+ベンダー/契約ID,IFKC,Apple Identifier,Apple Identifier,ACCOUNT ID,Custom ID
+原盤コード/Grid,原盤/アルバムコード,Grid,Grid,CONTRACT ID,GRid
+楽曲名,楽曲名,Title,Content Title,TRACK,Asset Title
+楽曲名 (詳細),,,,TRACK VERSION,
+アーティスト名,アーティスト名,Artist/Show/Developer/Author,Artist,TRACK ARTIST,Artist
+アーティスト (製品),,,,PRODUCT ARTIST,
+アルバム/製品名,アルバム名,,Product,PRODUCT,Album
+製品バージョン,,,,PRODUCT VERSION,
+ストア/サービス名,サービス名,Storefront Name,Storefront Name,STORE,
+サービス詳細/DSP,DSP名,,,SERVICE DETAIL,
+レーベル名,レーベル名,Label/Studio/Network/Developer/Publisher,Label/Studio/Network,LABEL IMPRINT,Label
+数量/回数,数量,Quantity,Total  Royalty Bearing Plays,QUANTITY,Owned Views
+販売単価,販売単価,Customer Price,,UNIT PRICE SALE CURRENCY,
+販売売上合計,販売売上合計,,,GROSS REVENUE SALE CURRENCY,
+分配料率/シェア,分配料率,Partner Share,,ACCOUNT SHARE,YouTube Revenue Split
+分配金額/純収益,使用料合計,Extended Partner Share,Net Royalty Total,NET SHARE ACCOUNT CURRENCY,Partner Revenue
+収益合計 (計上通貨),総支払額,,,GROSS REVENUE ACCOUNT CURRENCY,
+販売/取引種別,販売種別,Sales or Return,Media Type,TRANSACTION TYPE,Asset Type
+サブタイプ/修正,配信区分,Product Type Identifier,,TRANSACTION SUBTYPE,Adjustment Type
+国/地域,国,Country Of Sale,,SALE COUNTRY,Country
+通貨 (販売用),,Customer Currency,Currency,SALE CURRENCY,
+通貨 (計上用),,Partner Share Currency,,ACCOUNT CURRENCY,
+為替レート,,,,CURRENCY CONVERSION RATE,
+Asset Labels,,,,,Asset Labels
+Asset Channel ID,,,,,Asset Channel ID
+Administer Publish Rights,,,,,Administer Publish Rights
+YouTube Revenue Split : Auction,,,,,YouTube Revenue Split : Auction
+YouTube Revenue Split : Reserved,,,,,YouTube Revenue Split : Reserved
+YouTube Revenue Split : Partner Sold YouTube Served,,,,,YouTube Revenue Split : Partner Sold YouTube Served
+YouTube Revenue Split : Partner Sold Partner Served,,,,,YouTube Revenue Split : Partner Sold Partner Served
+Partner Revenue : Auction,,,,,Partner Revenue : Auction
+Partner Revenue : Reserved,,,,,Partner Revenue : Reserved
+Partner Revenue : Partner Sold YouTube Served,,,,,Partner Revenue : Partner Sold YouTube Served
+Partner Revenue : Partner Sold Partner Served,,,,,Partner Revenue : Partner Sold Partner Served
+レポート概要,レポート概要,,,,
+サービスタイプ,サービスタイプ,,,,
+コース・プラン名,コース・プラン名,,,,
+税率,税率,,,,
+手数料,手数料,,,,
+分配単価,分配単価,,,,
+著作権使用料単価,著作権使用料単価,,,,
+原盤使用料合計,原盤使用料合計,,,,
+著作権使用料合計,著作権使用料合計,,,,
+ISAN/Other Identifier,,ISAN/Other Identifier,,,
+Pre-order Flag,,Pre-order Flag,,,
+Promo Code,,Promo Code,,,
+Spatial Availability Indicator,,,Spatial Availability Indicator,,
+Offline Indicator,,,Offline Indicator,,
+ACCOUNT NAME,,,,ACCOUNT NAME,
+YOUTUBE VIDEO ID,,,,YOUTUBE VIDEO ID,
+PHYSICAL PPD USD,,,,PHYSICAL PPD USD,
+MECHANICAL DEDUCTION (US only),,,,MECHANICAL DEDUCTION (US only),
+MECHANICAL DEDUCTION ADMIN FEE (US only),,,,MECHANICAL DEDUCTION ADMIN FEE (US only),
+ROYALTY TYPE,,,,ROYALTY TYPE,
+ORIGINAL STATEMENT PERIOD,,,,ORIGINAL STATEMENT PERIOD,
